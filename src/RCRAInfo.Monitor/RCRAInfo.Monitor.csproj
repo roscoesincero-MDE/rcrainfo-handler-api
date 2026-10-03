@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    The web application (AR2). Phase 1 is monitoring only: it reads retrieval status and errors and
+    notifies impacted users. It never writes handler data, and its SQL login (RCRAInfoMonitor) is
+    denied every direct data permission. See src/RCRAInfo.Database/Scripts/050_Roles_and_Users.sql.
+
+    G18 puts this on the same machine as the loader in all three environments, which is why the
+    loader's credential file must deny read access to the IIS application pool identity: DPAPI
+    LocalMachine ciphertext is decryptable by any local process, so the NTFS ACL is the real control.
+  -->
+
+  <PropertyGroup>
+    <RootNamespace>RCRAInfo.Monitor</RootNamespace>
+    <UserSecretsId>rcrainfo-monitor</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Update rather than Include: the Web SDK already globs **/*.json into Content, so an Include here is
+      a duplicate item and a build error. Deployed for the same reason as the loader's copy — the
+      "not seeded" message names this file.
+    -->
+    <Content Update="secrets.Template.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RCRAInfo.Core\RCRAInfo.Core.csproj" />
+    <ProjectReference Include="..\RCRAInfo.Data\RCRAInfo.Data.csproj" />
+  </ItemGroup>
+
+</Project>
