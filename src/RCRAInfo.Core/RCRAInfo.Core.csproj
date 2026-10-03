@@ -1,1 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Domain types, strongly-typed options, and the DPAPI credential protection shared by the console
+    application and the web application. Core references no other project: it is the bottom of the
+    dependency graph, and nothing in it knows that SQL Server or EF Core exist.
+  -->
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" />
+  </ItemGroup>
+
+</Project>

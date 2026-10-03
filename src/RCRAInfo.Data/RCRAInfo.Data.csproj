@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Data access. EF Core is present for one purpose only (Revision 6): calling set-based stored
+    procedures. There is no change tracker write path, no migrations, and no model-first mapping.
+    See BannedSymbols.txt, which turns each of those into a build error rather than a code review
+    comment.
+  -->
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+  </ItemGroup>
+
+  <!--
+    Options binding and validation for RCRAInfoDataOptions. ValidateDataAnnotations plus
+    ValidateOnStart is what turns a bad timeout or a missing connection string into a startup failure
+    rather than a fault twenty minutes into an unattended overnight load.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RCRAInfo.Core\RCRAInfo.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    One internal member is reachable from the unit tests: SqlCredentialValidator.Describe, the message
+    table for AR4's five login outcomes. Three of those outcomes cannot be provoked from a server on
+    demand (an expired password needs the server's policy changed; error 233 appeared once in twenty
+    attempts) and SqlException cannot be constructed, so the alternative to this line is a message table
+    with most of its rows covered by nothing.
+
+    Deliberately InternalsVisibleTo and not a wider public surface: Describe is not something a caller
+    should reach for. AR4's public entry point is ValidateAsync.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="RCRAInfo.Data.Tests" />
+  </ItemGroup>
+
+</Project>

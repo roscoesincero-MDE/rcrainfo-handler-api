@@ -1,0 +1,728 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>RCRAInfo.Core</name>
+    </assembly>
+    <members>
+        <member name="T:RCRAInfo.Core.Credentials.ApplicationCredentials">
+             <summary>
+             The plaintext secrets from one credential file, in memory only. Never written anywhere by this
+             type, and never rendered by it either.
+             </summary>
+             <param name="SqlPassword">
+             The password for this application's own SQL login (AR3). Required: every environment authenticates
+             with a password, so an absent one is a malformed file rather than a default.
+             </param>
+             <param name="ApiId">
+             The RCRAInfo API ID, or <see langword="null"/> for the monitoring application, which never calls
+             EPA (AR2) and has no legitimate use for it — Analysis §6.1.
+             </param>
+             <param name="ApiKey">The RCRAInfo API Key, or <see langword="null"/> for the same reason.</param>
+             <remarks>
+             <b><see cref="M:RCRAInfo.Core.Credentials.ApplicationCredentials.ToString"/> is overridden, and that override is load-bearing.</b> A positional record
+             generates a <c>ToString</c> that prints every member, so
+             <c>logger.LogDebug("credentials: {Credentials}", credentials)</c> — a line that looks entirely
+             ordinary in a diff, and that a developer writes while chasing a login failure — would put the SQL
+             password and the API Key into a log. In this solution the log is
+             <c>logs.ExecutionLog</c>, which the monitoring web application can <b>read</b> (AR8). The generated
+             <c>ToString</c> is the only member of this record that can leak, and it is the one nobody calls on
+             purpose.
+            
+             <c>Equals</c> and <c>Deconstruct</c> still expose the values, deliberately: both are explicit reads
+             by a caller that has already decided to handle the plaintext.
+             </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.ApplicationCredentials.#ctor(System.String,System.String,System.String)">
+             <summary>
+             The plaintext secrets from one credential file, in memory only. Never written anywhere by this
+             type, and never rendered by it either.
+             </summary>
+             <param name="SqlPassword">
+             The password for this application's own SQL login (AR3). Required: every environment authenticates
+             with a password, so an absent one is a malformed file rather than a default.
+             </param>
+             <param name="ApiId">
+             The RCRAInfo API ID, or <see langword="null"/> for the monitoring application, which never calls
+             EPA (AR2) and has no legitimate use for it — Analysis §6.1.
+             </param>
+             <param name="ApiKey">The RCRAInfo API Key, or <see langword="null"/> for the same reason.</param>
+             <remarks>
+             <b><see cref="M:RCRAInfo.Core.Credentials.ApplicationCredentials.ToString"/> is overridden, and that override is load-bearing.</b> A positional record
+             generates a <c>ToString</c> that prints every member, so
+             <c>logger.LogDebug("credentials: {Credentials}", credentials)</c> — a line that looks entirely
+             ordinary in a diff, and that a developer writes while chasing a login failure — would put the SQL
+             password and the API Key into a log. In this solution the log is
+             <c>logs.ExecutionLog</c>, which the monitoring web application can <b>read</b> (AR8). The generated
+             <c>ToString</c> is the only member of this record that can leak, and it is the one nobody calls on
+             purpose.
+            
+             <c>Equals</c> and <c>Deconstruct</c> still expose the values, deliberately: both are explicit reads
+             by a caller that has already decided to handle the plaintext.
+             </remarks>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.ApplicationCredentials.SqlPassword">
+            <summary>
+            The password for this application's own SQL login (AR3). Required: every environment authenticates
+            with a password, so an absent one is a malformed file rather than a default.
+            </summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.ApplicationCredentials.ApiId">
+            <summary>
+            The RCRAInfo API ID, or <see langword="null"/> for the monitoring application, which never calls
+            EPA (AR2) and has no legitimate use for it — Analysis §6.1.
+            </summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.ApplicationCredentials.ApiKey">
+            <summary>The RCRAInfo API Key, or <see langword="null"/> for the same reason.</summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.ApplicationCredentials.ToString">
+            <summary>A description that names the fields present and reveals none of their values.</summary>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.ApplicationIdentity">
+             <summary>
+             Which of the two applications a credential file belongs to (AR3: each has its own SQL login, so
+             each has its own credential file).
+             </summary>
+             <remarks>
+             This selects the DPAPI <c>optionalEntropy</c> value, and that is the whole of its job. Analysis
+             §6.1 is explicit that the entropy is <b>not</b> a security boundary: G18 puts both applications on
+             one machine, <see cref="F:System.Security.Cryptography.DataProtectionScope.LocalMachine"/> ciphertext
+             is decryptable by any process there, and the entropy is a byte array sitting in the other
+             application's own binary. The NTFS ACL is the control.
+            
+             What the entropy does buy is worth having anyway: a blob sealed for one application fails loudly
+             in the other rather than decrypting into the wrong credential. Copying the loader's
+             <c>secrets.json</c> into the monitor's directory is a plausible operator mistake, and the failure
+             mode without entropy is the monitor connecting to SQL Server as the loader.
+             </remarks>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.ApplicationIdentity.Loader">
+            <summary>The console application (AR1), run by Windows Task Scheduler.</summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.ApplicationIdentity.Monitor">
+            <summary>The web application (AR2), run under an IIS application pool.</summary>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialBootstrapOptions">
+            <summary>
+            The two timings <see cref="T:RCRAInfo.Core.Credentials.CredentialBootstrapper"/> needs, separated from it so a test can make the
+            lock contend in milliseconds rather than in minutes.
+            </summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapOptions.Default">
+            <summary>The defaults, which are what both applications use in every environment.</summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapOptions.LockTimeout">
+            <summary>
+            How long to wait for another process to finish with the credential file before giving up.
+            </summary>
+            <remarks>
+            <b>This must exceed however long validation takes</b>, and validation is a network round trip:
+            a SQL login, or an EPA auth call. The process that wins the lock holds it across that call —
+            it has to, because G5 requires the <c>Encrypted</c> flag to be re-read <i>inside</i> the lock —
+            so the process that loses waits out the winner's entire login, including the winner's connect
+            timeout if the server is slow to answer. Sixty seconds is four times the SQL Server default
+            connect timeout of fifteen, which leaves room for a retry inside the validator.
+            <para>
+            Set too low, the symptom is not a hang. It is one of the two co-resident applications reporting
+            <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Locked"/> on the one run per environment where both start
+            at once — the seeding run, under G18, which the plan calls the normal case rather than an edge
+            case.
+            </para>
+            </remarks>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapOptions.LockPollInterval">
+            <summary>How long to wait between attempts to open the file.</summary>
+            <remarks>
+            There is no file-lock wait primitive on Windows for this: a sharing violation is an error, not a
+            blocking call, so the wait is a poll. Fifty milliseconds is short enough that the loser starts
+            promptly after the winner finishes and long enough that a minute of waiting is about a thousand
+            attempts rather than a spin.
+            </remarks>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialBootstrapper">
+            <summary>
+            AR4, end to end: read the credential file, prove the credentials work, and — if they were in
+            plaintext — seal them and rewrite the file, once, under an exclusive lock.
+            </summary>
+            <remarks>
+            <para>
+            This is Analysis §6.1's G5 matrix as one method. Each row is an outcome of
+            <see cref="T:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome"/> and each is reproduced by a test:
+            </para>
+            <list type="table">
+              <item><term><c>Encrypted: false</c>, validation succeeds</term>
+                    <description>seal, rewrite, continue — <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Sealed"/></description></item>
+              <item><term><c>Encrypted: false</c>, validation fails</term>
+                    <description>leave the plaintext exactly as it was, report the reason, do not continue</description></item>
+              <item><term><c>Encrypted: true</c>, decryption fails</term>
+                    <description>fail fast naming the re-seed procedure; never overwrite, never fall back</description></item>
+              <item><term><c>Encrypted: true</c>, decrypts but validation fails</term>
+                    <description>report the reason, do not continue — the password was rotated upstream</description></item>
+              <item><term>concurrent first run</term>
+                    <description>exclusive lock, and the flag is re-read <b>inside</b> it</description></item>
+            </list>
+            <para>
+            <b>Why the whole of it happens inside one open handle.</b> The lock is not a separate lock file: it
+            is the credential file itself, opened <see cref="F:System.IO.FileShare.None"/>. Read, decide, and rewrite all go
+            through that handle, which is what makes "re-read and re-check <c>Encrypted</c> inside the lock" true
+            rather than merely intended — there is no window between the check and the write for the other
+            application to seal the file first. Validation happens inside the lock too, which means the loser of
+            the race waits out the winner's network round trip; see
+            <see cref="P:RCRAInfo.Core.Credentials.CredentialBootstrapOptions.LockTimeout"/>.
+            </para>
+            <para>
+            <b>Why the rewrite is in place, and not the safer-looking temp-file swap.</b> The file's DACL is the
+            only thing standing between the co-resident web application and this application's SQL password
+            (Analysis §6.1, G18: <c>LocalMachine</c> ciphertext is decryptable by any process on the box, and
+            <c>Set-CredentialFileAcl.ps1</c> writes an explicit deny for the IIS application pool identity).
+            Measured on this project, against a file carrying that deny ACE with inheritance switched off:
+            </para>
+            <list type="table">
+              <item><term>temp file + <c>File.Replace</c></term><description>DACL preserved</description></item>
+              <item><term>temp file + <c>MoveFileEx</c> replace</term><description><b>deny ACE gone, inheritance back on</b></description></item>
+              <item><term>delete + recreate</term><description><b>deny ACE gone, inheritance back on</b></description></item>
+              <item><term>in-place truncate and write</term><description>DACL preserved</description></item>
+            </list>
+            <para>
+            Two of the four obvious ways to rewrite a file silently discard the ACE, and the two that survive
+            are not equally good here: <c>File.Replace</c> preserves the destination's DACL but the temp file it
+            needs is created with the <i>directory's</i> inherited permissions, so for the moment it exists the
+            application pool identity can read the ciphertext out of it. In-place has no second file, cannot
+            lose the DACL, and needs no ACL code of its own.
+            </para>
+            <para>
+            The cost of in-place is a crash window: a process that dies between the truncate and the flush
+            leaves a file with no recoverable password in it. That is accepted rather than engineered around,
+            because the remedy already exists and is already mandatory — the password is in the password manager
+            (plan §4.2), and re-seeding is the documented response to the far more likely machine rebuild. A
+            test asserts that no sibling file is ever created, so a later refactor to the temp-file form has to
+            argue with a failing test rather than quietly hand the web application a readable copy.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapper.#ctor(RCRAInfo.Core.Credentials.ISecretProtector,RCRAInfo.Core.Credentials.CredentialBootstrapOptions)">
+            <summary>Creates a bootstrapper for one application's credential file.</summary>
+            <param name="protector">
+            The protector for this application — see <see cref="T:RCRAInfo.Core.Credentials.ApplicationIdentity"/> for why it is
+            per-application.
+            </param>
+            <param name="options">Lock timings, or <see langword="null"/> for the defaults.</param>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapper.BootstrapAsync(System.String,RCRAInfo.Core.Credentials.CredentialValidator,System.Threading.CancellationToken)">
+            <summary>Runs the AR4 bootstrap against one credential file.</summary>
+            <param name="path">The credential file — see <see cref="F:RCRAInfo.Core.Credentials.CredentialFile.DefaultFileName"/>.</param>
+            <param name="validate">
+            Proves the credentials work. Called on every path that reaches usable plaintext, and always
+            <b>before</b> anything is sealed.
+            </param>
+            <param name="cancellationToken">Cancellation.</param>
+            <returns>
+            What happened, and on success the credentials. Never throws for any condition the matrix covers:
+            an unattended 2am run needs a message and an exit code, not a stack trace.
+            </returns>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapper.ContinueSealedAsync(System.String,RCRAInfo.Core.Credentials.CredentialFile,RCRAInfo.Core.Credentials.CredentialValidator,System.Int32,System.Threading.CancellationToken)">
+            <summary>
+            The steady state, plus G5 rows 3 and 4: the file is sealed, so open it and prove it still works.
+            </summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapper.SealAsync(System.String,System.IO.FileStream,RCRAInfo.Core.Credentials.CredentialFile,RCRAInfo.Core.Credentials.CredentialValidator,System.Int32,System.Threading.CancellationToken)">
+            <summary>G5 rows 1 and 2: the file holds plaintext, so validate it and only then seal it.</summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapper.ValidateAsync(RCRAInfo.Core.Credentials.CredentialValidator,RCRAInfo.Core.Credentials.ApplicationCredentials,System.Threading.CancellationToken)">
+            <summary>
+            Calls the validator, and turns a thrown exception into a rejection.
+            </summary>
+            <remarks>
+            <b>The exception's message is deliberately not reported.</b> A validator is expected to
+            <i>return</i> a rejection carrying a message it has judged safe — that is the sanctioned channel,
+            and it is the one G5's "log the SQL error" means. A thrown exception is the unsanctioned path and
+            gets its type only, because of what the API validator throws: EPA's auth endpoint is
+            <c>GET /api/v1/auth/{apiId}/{apiKey}</c>, so the credentials are in the URI <b>path</b>, and an
+            <c>HttpRequestException</c> from that call carries the API Key in the request URI it names. AR8
+            forbids that reaching a log the monitoring web application can read, and this is the one place in
+            the credential code where it could arrive without anyone writing it down.
+            </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapper.AcquireAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Opens the credential file exclusively, waiting out the other application if it got there first.
+            </summary>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome">
+            <summary>
+            How <see cref="M:RCRAInfo.Core.Credentials.CredentialBootstrapper.BootstrapAsync(System.String,RCRAInfo.Core.Credentials.CredentialValidator,System.Threading.CancellationToken)"/> ended. One member per operator action:
+            if two outcomes would send the operator to the same place, they are the same outcome.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Ready">
+            <summary>
+            The file was already sealed, opened, and its credentials were accepted. The steady state, and
+            the only outcome that should ever appear in a log after the first run in an environment.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Sealed">
+            <summary>
+            The file held plaintext, the credentials were accepted, and the file has been rewritten with
+            <c>Encrypted: true</c>. G5 row 1. Expected exactly once per application per machine.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.ValidationFailed">
+            <summary>
+            The credentials were rejected. G5 rows 2 and 4. Plaintext, if that is what the file held, has
+            been <b>left exactly as it was</b>, so an operator typo is still correctable by editing the
+            file.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.DecryptionFailed">
+            <summary>
+            The file says <c>Encrypted: true</c> and the value could not be recovered. G5 row 3 — usually a
+            machine rebuild or a change of service account. Nothing has been written, and nothing will be:
+            there is no fallback to plaintext and no silent re-seal.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.SealFailed">
+            <summary>
+            The credentials were accepted, but the sealed file could not be written. The secret is still
+            valid and still in plaintext on disk, which is why this is a failure and not a warning — see
+            the remarks on <see cref="T:RCRAInfo.Core.Credentials.CredentialBootstrapResult"/>.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.NotSeeded">
+            <summary>The credential file does not exist. The environment has not been seeded (plan §4.2).</summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Malformed">
+            <summary>
+            The file exists but cannot be read as a credential file. Reported separately from
+            <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.NotSeeded"/> because the remedy differs: a missing file is created from the template,
+            a malformed one is repaired without losing whatever else it holds.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Locked">
+            <summary>
+            Another process held the file for longer than the configured lock timeout. Under G18 the two
+            applications are co-resident, so contention on a first run is normal and is waited out; this
+            outcome means the wait was not enough.
+            </summary>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.AccessDenied">
+            <summary>
+            The file could not be opened for read and write by this identity. Almost always the ACL applied
+            by <c>Set-CredentialFileAcl.ps1</c> naming a different account than the one the application is
+            actually running as.
+            </summary>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialBootstrapResult">
+            <summary>
+            What happened, what to tell the operator, and — only on success — the credentials.
+            </summary>
+            <param name="Outcome">Which of the G5 rows this run took.</param>
+            <param name="Credentials">
+            The plaintext credentials on <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Ready"/> and
+            <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Sealed"/>; <see langword="null"/> on every failure.
+            </param>
+            <param name="Message">
+            One paragraph for the operator, naming the file and the next action. Contains no credential on any
+            path — that is asserted by test, for every outcome, including the paths where the value that failed
+            <i>is</i> the password.
+            </param>
+            <param name="LockWaits">
+            How many times the file was found locked by another process before it opened. Zero in the ordinary
+            case. Reported rather than swallowed so that a test of the concurrent first run can assert the lock
+            was actually <i>contended</i> — otherwise two runs that happened to serialise would pass the test
+            while proving nothing about the lock.
+            </param>
+            <remarks>
+            <b>Why <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.SealFailed"/> is a failure.</b> At that point the
+            credentials are known good, so the application could carry on and do its night's work. It does not,
+            because the alternative is worse in a way nobody would notice: the load succeeds every night, the
+            file stays in plaintext, and the one visit the runbook allocates to seeding this machine has already
+            happened. A non-zero exit brings the operator back while they still remember why they were there.
+            </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapResult.#ctor(RCRAInfo.Core.Credentials.CredentialBootstrapOutcome,RCRAInfo.Core.Credentials.ApplicationCredentials,System.String,System.Int32)">
+            <summary>
+            What happened, what to tell the operator, and — only on success — the credentials.
+            </summary>
+            <param name="Outcome">Which of the G5 rows this run took.</param>
+            <param name="Credentials">
+            The plaintext credentials on <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Ready"/> and
+            <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Sealed"/>; <see langword="null"/> on every failure.
+            </param>
+            <param name="Message">
+            One paragraph for the operator, naming the file and the next action. Contains no credential on any
+            path — that is asserted by test, for every outcome, including the paths where the value that failed
+            <i>is</i> the password.
+            </param>
+            <param name="LockWaits">
+            How many times the file was found locked by another process before it opened. Zero in the ordinary
+            case. Reported rather than swallowed so that a test of the concurrent first run can assert the lock
+            was actually <i>contended</i> — otherwise two runs that happened to serialise would pass the test
+            while proving nothing about the lock.
+            </param>
+            <remarks>
+            <b>Why <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.SealFailed"/> is a failure.</b> At that point the
+            credentials are known good, so the application could carry on and do its night's work. It does not,
+            because the alternative is worse in a way nobody would notice: the load succeeds every night, the
+            file stays in plaintext, and the one visit the runbook allocates to seeding this machine has already
+            happened. A non-zero exit brings the operator back while they still remember why they were there.
+            </remarks>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapResult.Outcome">
+            <summary>Which of the G5 rows this run took.</summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapResult.Credentials">
+            <summary>
+            The plaintext credentials on <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Ready"/> and
+            <see cref="F:RCRAInfo.Core.Credentials.CredentialBootstrapOutcome.Sealed"/>; <see langword="null"/> on every failure.
+            </summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapResult.Message">
+            <summary>
+            One paragraph for the operator, naming the file and the next action. Contains no credential on any
+            path — that is asserted by test, for every outcome, including the paths where the value that failed
+            <i>is</i> the password.
+            </summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapResult.LockWaits">
+            <summary>
+            How many times the file was found locked by another process before it opened. Zero in the ordinary
+            case. Reported rather than swallowed so that a test of the concurrent first run can assert the lock
+            was actually <i>contended</i> — otherwise two runs that happened to serialise would pass the test
+            while proving nothing about the lock.
+            </summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialBootstrapResult.Succeeded">
+            <summary>Whether the application may continue.</summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialBootstrapResult.Require">
+            <summary>
+            The credentials, or an exception if this result is a failure. For the call site that has already
+            checked <see cref="P:RCRAInfo.Core.Credentials.CredentialBootstrapResult.Succeeded"/> and would otherwise write <c>result.Credentials!</c>, which is
+            the same assertion made invisibly.
+            </summary>
+            <exception cref="T:System.InvalidOperationException">This result is a failure.</exception>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialFile">
+            <summary>
+            The contents of one credential file: the <c>Encrypted</c> flag, the secrets, and everything else
+            the file happens to contain.
+            </summary>
+            <remarks>
+            <para>
+            <b>Why this is not a deserialized POCO.</b> The file is hand-written by whoever seeds the
+            environment (plan §4.2 step 1) and rewritten in place by the application. Round-tripping it through
+            a class with four properties would silently delete every property the class does not know about —
+            an operator's own note, a key added by a later revision, a setting someone put here rather than in
+            <c>appsettings.json</c>. There is no backup of this file and no source control copy of it, by
+            design. So it is read as a <see cref="T:System.Text.Json.Nodes.JsonObject"/>, exactly four properties are touched, and the
+            rest is written back unchanged.
+            </para>
+            <para>
+            <b>Key lookup is case-insensitive, and a case collision is an error.</b> Operators type
+            <c>"encrypted"</c>. Reading one spelling and writing another would leave a file that says both, one
+            of them stale — and the stale one being <c>Encrypted: false</c> over a sealed value is a file that
+            re-seals its own ciphertext on the next run. So a file containing two spellings of the same key is
+            refused rather than guessed at.
+            </para>
+            <para>
+            <b>What is lost on a rewrite:</b> comments and formatting. Both are accepted on the way in —
+            hand-edited JSON has trailing commas and <c>//</c> notes in it — and neither survives
+            <see cref="M:RCRAInfo.Core.Credentials.CredentialFile.Seal(RCRAInfo.Core.Credentials.ISecretProtector)"/>, because <see cref="T:System.Text.Json.Nodes.JsonNode"/> does not carry them. Stated in the runbook rather
+            than worked around: the file is normalized the first time the application seals it.
+            </para>
+            </remarks>
+        </member>
+        <member name="F:RCRAInfo.Core.Credentials.CredentialFile.DefaultFileName">
+            <summary>
+            The file name this class expects, and the reason <c>reloadOnChange</c> never comes up.
+            </summary>
+            <remarks>
+            Analysis §6.1 requires <c>reloadOnChange: false</c> on the file the application rewrites, or the
+            web application recycles itself the moment it encrypts its own configuration. This design goes a
+            step further and takes the file out of the configuration system altogether: it is read by this
+            class, not by <c>IConfiguration</c>, so there is no file watcher to disable and no way for a
+            later `AddJsonFile` call to reintroduce one by omitting an argument. The name is deliberately
+            not <c>appsettings*.json</c>, which is what the default host configuration globs.
+            <para>
+            <c>.gitignore</c> already excludes this exact name, and
+            <c>build/check_gitignore_secrets.py</c> asserts that it does.
+            </para>
+            </remarks>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialFile.Encrypted">
+            <summary>Whether the secrets in this file are sealed. AR4's <c>Encrypted</c> flag.</summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialFile.HasApiCredentials">
+            <summary>Whether this file carries RCRAInfo API credentials as well as a SQL password.</summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFile.Parse(System.String)">
+            <summary>Reads a credential file.</summary>
+            <param name="json">The file's text.</param>
+            <returns>The parsed file, ready to be opened or sealed.</returns>
+            <exception cref="T:RCRAInfo.Core.Credentials.CredentialFileFormatException">
+            The text is not JSON, is not an object, is missing a required key, spells one key two ways, or
+            holds a secret that is not a string.
+            </exception>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFile.Read(System.String)">
+            <summary>Reads a credential file from disk. Convenience over <see cref="M:RCRAInfo.Core.Credentials.CredentialFile.Parse(System.String)"/>.</summary>
+            <param name="path">The file.</param>
+            <returns>The parsed file.</returns>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFile.ReadPlaintext">
+            <summary>
+            The secrets of an unsealed file, as they are.
+            </summary>
+            <returns>The plaintext credentials.</returns>
+            <exception cref="T:System.InvalidOperationException">This file is sealed; use <see cref="M:RCRAInfo.Core.Credentials.CredentialFile.Unseal(RCRAInfo.Core.Credentials.ISecretProtector)"/>.</exception>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFile.Unseal(RCRAInfo.Core.Credentials.ISecretProtector)">
+            <summary>Recovers the secrets of a sealed file.</summary>
+            <param name="protector">The protector for the application this file belongs to.</param>
+            <returns>The plaintext credentials.</returns>
+            <exception cref="T:System.InvalidOperationException">This file is not sealed.</exception>
+            <exception cref="T:System.Security.Cryptography.CryptographicException">
+            A value could not be recovered. G5 row 3.
+            </exception>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFile.Seal(RCRAInfo.Core.Credentials.ISecretProtector)">
+            <summary>
+            The text of this file with every secret sealed and the flag set to <c>true</c>. Everything else
+            in the file — including properties this class does not know about — is preserved.
+            </summary>
+            <param name="protector">The protector for the application this file belongs to.</param>
+            <returns>The new file text, ending in a newline.</returns>
+            <exception cref="T:System.InvalidOperationException">This file is already sealed.</exception>
+            <remarks>
+            Returns text rather than writing it. The caller holds the file open exclusively and writes
+            through that one handle, and every byte is produced before the handle is touched — so the only
+            way the write can fail is the disk itself, rather than a protector throwing halfway through a
+            file that has already been truncated.
+            </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFile.SeedTemplate(RCRAInfo.Core.Credentials.ApplicationIdentity)">
+            <summary>
+            The text of a fresh, unsealed credential file for one application: the shape an operator fills
+            in at plan §4.2 step 1.
+            </summary>
+            <param name="application">Which application's file. The monitor gets no API credentials.</param>
+            <returns>The template text.</returns>
+            <remarks>
+            Generated rather than hand-written so that the template committed to the repository cannot drift
+            from the parser that has to accept it; a test asserts the committed files are exactly this.
+            </remarks>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialFileFormatException">
+            <summary>
+            The credential file exists but is not one this application can act on.
+            </summary>
+            <remarks>
+            Every message this is thrown with names the problem in terms of the file an operator is looking at
+            — the key, the line, what was expected — and <b>never</b> quotes a value, because on the path where
+            the flag says <c>Encrypted: true</c> over an unsealed value, the value is the password.
+            </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFileFormatException.#ctor">
+            <summary>Creates the exception.</summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFileFormatException.#ctor(System.String)">
+            <summary>Creates the exception with a message naming the problem.</summary>
+            <param name="message">What is wrong, for an operator. Must not quote a secret value.</param>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialFileFormatException.#ctor(System.String,System.Exception)">
+            <summary>Creates the exception with a message and the underlying cause.</summary>
+            <param name="message">What is wrong, for an operator. Must not quote a secret value.</param>
+            <param name="innerException">The parse failure underneath.</param>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialValidation">
+            <summary>
+            The answer to "are these credentials actually usable?" — AR4's "login using the password which
+            will verify that the password is valid", and for the API Key its analogue, a successful
+            <c>GET /api/v1/auth/{apiId}/{apiKey}</c> (Analysis §6.1, G6).
+            </summary>
+            <param name="IsValid">Whether the credentials were accepted by whatever they authenticate to.</param>
+            <param name="FailureMessage">
+            Why they were rejected, for the operator. Empty when <paramref name="IsValid"/> is
+            <see langword="true"/>.
+            <para>
+            <b>This string must never contain the credential it failed to validate.</b> It is logged, and in
+            this solution the log is readable by the monitoring web application (AR8). A SQL login failure
+            message names the login and not the password, and an EPA auth failure is an HTTP status — so the
+            natural implementations are already safe. The one that is not is a caller that helpfully appends
+            "(password: ...)" to make the message easier to act on.
+            </para>
+            </param>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialValidation.#ctor(System.Boolean,System.String)">
+            <summary>
+            The answer to "are these credentials actually usable?" — AR4's "login using the password which
+            will verify that the password is valid", and for the API Key its analogue, a successful
+            <c>GET /api/v1/auth/{apiId}/{apiKey}</c> (Analysis §6.1, G6).
+            </summary>
+            <param name="IsValid">Whether the credentials were accepted by whatever they authenticate to.</param>
+            <param name="FailureMessage">
+            Why they were rejected, for the operator. Empty when <paramref name="IsValid"/> is
+            <see langword="true"/>.
+            <para>
+            <b>This string must never contain the credential it failed to validate.</b> It is logged, and in
+            this solution the log is readable by the monitoring web application (AR8). A SQL login failure
+            message names the login and not the password, and an EPA auth failure is an HTTP status — so the
+            natural implementations are already safe. The one that is not is a caller that helpfully appends
+            "(password: ...)" to make the message easier to act on.
+            </para>
+            </param>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialValidation.IsValid">
+            <summary>Whether the credentials were accepted by whatever they authenticate to.</summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialValidation.FailureMessage">
+            <summary>
+            Why they were rejected, for the operator. Empty when <paramref name="IsValid"/> is
+            <see langword="true"/>.
+            <para>
+            <b>This string must never contain the credential it failed to validate.</b> It is logged, and in
+            this solution the log is readable by the monitoring web application (AR8). A SQL login failure
+            message names the login and not the password, and an EPA auth failure is an HTTP status — so the
+            natural implementations are already safe. The one that is not is a caller that helpfully appends
+            "(password: ...)" to make the message easier to act on.
+            </para>
+            </summary>
+        </member>
+        <member name="P:RCRAInfo.Core.Credentials.CredentialValidation.Valid">
+            <summary>The credentials were accepted.</summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialValidation.Invalid(System.String)">
+            <summary>The credentials were rejected, for the stated reason.</summary>
+            <param name="failureMessage">
+            Why, for an operator. Must not contain the credential — see the remarks on
+            <see cref="P:RCRAInfo.Core.Credentials.CredentialValidation.FailureMessage"/>.
+            </param>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialValidator">
+             <summary>
+             Proves that credentials work, by using them. Supplied by the application rather than implemented
+             here: RCRAInfo.Core knows nothing about SQL Server or HTTP, and both of the real validators are
+             one of those two things.
+             </summary>
+             <param name="credentials">The plaintext credentials to try.</param>
+             <param name="cancellationToken">Cancellation.</param>
+             <returns>Whether they were accepted.</returns>
+             <remarks>
+             Called <b>before</b> anything is encrypted, on every path — that is G5's first two rows, and the
+             whole of "never encrypt a password that failed validation". It is also called on the already-sealed
+             path, because a password rotated upstream is G5's fourth row and the only way to detect it is to
+             try it.
+            
+             An implementation is expected to <b>return</b> a rejection rather than throw one. A thrown
+             exception is treated as a rejection too, so a validator that throws on a bad login is not a defect
+             — but its exception message goes to the operator, and an exception from an HTTP stack carries a URI
+             with a query string, which is why AR8 forbids logging one whole (see
+             <see cref="P:RCRAInfo.Core.Credentials.CredentialValidation.FailureMessage"/>).
+             </remarks>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.CredentialValidators">
+            <summary>Combines validators. The one thing worth having a helper for.</summary>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.CredentialValidators.All(RCRAInfo.Core.Credentials.CredentialValidator[])">
+            <summary>
+            Runs validators in order and returns the first rejection, or valid if every one accepts.
+            </summary>
+            <param name="validators">
+            The validators, in the order they should run. Order is a decision, not a detail — the loader's
+            SQL login goes first so that an unreachable SQL Server is not reported as a problem with an API
+            Key nobody tried.
+            </param>
+            <returns>A validator that requires all of them.</returns>
+            <remarks>
+            <para>
+            Short-circuiting, and not only for speed. The credential file holds several secrets and the
+            bootstrapper seals all of them together or none, so the first rejection already decides the
+            outcome; running the rest would add a second failure message about a credential that is fine and
+            leave an operator guessing which one to fix.
+            </para>
+            <para>
+            An empty list is refused rather than treated as valid. "Validate against nothing" is what a
+            misconfigured host produces, and its effect would be to seal every secret in the file without
+            checking any of them — the exact outcome AR4's validation step exists to prevent.
+            </para>
+            </remarks>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.DpapiSecretProtector">
+            <summary>
+            The AR4 mechanism: Windows DPAPI at <see cref="F:System.Security.Cryptography.DataProtectionScope.LocalMachine"/> scope with a
+            per-application <c>optionalEntropy</c> value, Base64 for the file.
+            </summary>
+            <remarks>
+            <para>
+            <b>Why <see cref="F:System.Security.Cryptography.DataProtectionScope.LocalMachine"/> and not <c>CurrentUser</c></b> (Analysis
+            §6.1): the two applications run under different identities — a Task Scheduler service account and
+            an IIS application pool. <c>CurrentUser</c> binds the ciphertext to one Windows profile and needs
+            that profile loaded, which is the classic "works interactively, fails when scheduled" failure.
+            <c>LocalMachine</c> is robust under both hosts, and its weakness — any process on the box can
+            decrypt — is answered by the file ACL, not by the scope.
+            </para>
+            <para>
+            <b>The entropy is derived from a constant, and that is deliberate.</b> It is a fixed string per
+            application, hashed to 32 bytes so the length is uniform. It is not a key, it is not secret, and
+            hardening it would be theatre: it ships inside the binary of the application it belongs to, on the
+            same machine as the ciphertext. See <see cref="T:RCRAInfo.Core.Credentials.ApplicationIdentity"/> for what it does buy.
+            </para>
+            <para>
+            The version suffix in each literal exists so that a future decision to change the entropy is
+            forced to be a deliberate, named change. Changing these strings invalidates every sealed file in
+            every environment — the same consequence as a machine rebuild, and it needs the same re-seed visit.
+            </para>
+            </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.DpapiSecretProtector.#ctor(RCRAInfo.Core.Credentials.ApplicationIdentity)">
+            <summary>Creates a protector for one application's credential file.</summary>
+            <param name="application">Whose file this protector seals and opens.</param>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.DpapiSecretProtector.Protect(System.String)">
+            <inheritdoc/>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.DpapiSecretProtector.Unprotect(System.String)">
+            <inheritdoc/>
+        </member>
+        <member name="T:RCRAInfo.Core.Credentials.ISecretProtector">
+             <summary>
+             Turns a plaintext secret into a string that can sit in a file, and back again.
+             </summary>
+             <remarks>
+             An interface rather than a direct call to
+             <see cref="T:System.Security.Cryptography.ProtectedData"/> for one reason that matters and one that
+             does not.
+            
+             The reason that matters: G5's third row — <c>Encrypted: true</c> and decryption fails — is the row
+             with the strictest requirement on this code ("never silently overwrite or fall back to plaintext"),
+             and it is the row that in production is caused by a machine rebuild. A test cannot rebuild the
+             machine. It can substitute a protector that throws, and it can also produce the real thing three
+             other ways: tamper with the ciphertext, seal with one application's entropy and open with the
+             other's, or set the flag to <c>true</c> over a value that was never sealed at all. All four are
+             exercised; three of them go through real DPAPI.
+            
+             The reason that does not matter: portability. Nothing here is expected to run off Windows. G18 puts
+             both applications on Windows Server in all three environments.
+             </remarks>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.ISecretProtector.Protect(System.String)">
+            <summary>Seals a plaintext secret. The result is safe to write to a file.</summary>
+            <param name="plaintext">The secret. Never logged, never echoed in an exception message.</param>
+            <returns>The sealed form, as a string that survives a JSON round trip.</returns>
+        </member>
+        <member name="M:RCRAInfo.Core.Credentials.ISecretProtector.Unprotect(System.String)">
+            <summary>Recovers a secret sealed by <see cref="M:RCRAInfo.Core.Credentials.ISecretProtector.Protect(System.String)"/>.</summary>
+            <param name="ciphertext">The sealed form as read from the file.</param>
+            <returns>The plaintext secret.</returns>
+            <exception cref="T:System.Security.Cryptography.CryptographicException">
+            The value could not be recovered — for any reason, including a value that is not even in the
+            right encoding. One exception type, because the caller's only correct response to every cause
+            is the same: refuse to start and tell the operator to re-seed. An implementation that let a
+            <see cref="T:System.FormatException"/> escape instead would reach a <c>catch</c> block written for
+            cryptographic failure and crash with a stack trace rather than the actionable message G5
+            requires.
+            </exception>
+        </member>
+    </members>
+</doc>

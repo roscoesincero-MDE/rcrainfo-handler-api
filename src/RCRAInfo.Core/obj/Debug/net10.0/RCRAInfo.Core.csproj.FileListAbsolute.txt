@@ -1,0 +1,14 @@
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\bin\Debug\net10.0\RCRAInfo.Core.deps.json
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\bin\Debug\net10.0\RCRAInfo.Core.dll
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\bin\Debug\net10.0\RCRAInfo.Core.pdb
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\bin\Debug\net10.0\RCRAInfo.Core.xml
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.csproj.AssemblyReference.cache
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.AssemblyInfoInputs.cache
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.AssemblyInfo.cs
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.csproj.CoreCompileInputs.cache
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.dll
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\refint\RCRAInfo.Core.dll
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.xml
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\RCRAInfo.Core.pdb
+C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\Debug\net10.0\ref\RCRAInfo.Core.dll
