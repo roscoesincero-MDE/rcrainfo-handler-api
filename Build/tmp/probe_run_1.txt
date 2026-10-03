@@ -1,0 +1,69 @@
+Opened LoadRunIds 89, 90, 91
+ 
+=== A. Refusals, and every one of them recorded ===
+  ok    null @SortBy -> @SortBy = NULL is not a sortable column of this grid. Use one of LoadRunId, HandlerI
+  ok    unknown @SortBy -> @SortBy = 'FirstSeenDate' is not a sortable column of this grid. Use one of LoadRunI
+  ok    @SortBy names a returned but unsortable column -> @SortBy = 'DurationMs' is not a sortable column of this grid. Use one of LoadRunId, 
+  ok    @Status outside the CHECK set -> @Status = 'Faild' is not one of the values CK_logs_HandlerLoadStatus_Status allows: 
+  ok    @Outcome outside the CHECK set -> @Outcome = 'Inserted2' is not one of the values CK_logs_HandlerLoadStatus_Outcome al
+  ok    @LatestOnly with @LoadRunId -> @LatestOnly = 1 cannot be combined with @LoadRunId = 89. They are different question
+  ExecutionLog rows written by the refusals = 6   ok  (all six recorded)
+  orphan rows with the duration in ContextMessage = 6   ok  (ElapsedMilliseconds stays NULL, which is what identifies an orphan)
+  recorded failures missing KeyParameters = 0   ok  (what the caller sent is on every row)
+ 
+=== A2. G37: inside a transaction the caller doomed, NOTHING can be recorded ===
+logs.uspRecordExecutionError could not write the execution log row for this failure (error 3930). The calling transaction is doomed, so NO log row can be written until it is rolled back. The caller wrapped this call in a transaction that SET XACT_ABORT ON then aborted; a procedure that owns its transaction rolls it back before recording, and one that does not cannot. The error it hit was discarded so that the original error still reaches the caller. logs.ExecutionLog is therefore missing a row for a call that failed.
+  XACT_STATE inside the CATCH = -1   ok  (doomed, as XACT_ABORT ON requires)
+  log rows written while doomed = 0   ok  (error 3930 -- the documented G37 boundary, not a regression)
+ 
+=== B. The successful path writes NO log row ===
+  ExecutionLog rows written by a successful page = 0   ok  (a grid refresh must not log)
+  fixture rows = 7, TotalRows = 7   ok  (TotalRows is the filtered total, on every row)
+  rows disagreeing about TotalRows = 0   ok
+ 
+=== C. EPA's error text comes back; our own does not ===
+  ApiErrorMessage = E_INTERNAL: the source system is unavailable.   ok
+  rows carrying the Phase 2 defaults = 7   ok  (returned now so adding them later is not a caller change)
+ 
+=== D. Paging: three pages of three over seven rows, no repeats and no skips ===
+  rows across 3 pages = 7, distinct = 7   ok  (every fixture row exactly once -- the tiebreaker is doing its job)
+  distinct FirstSeenDateUtc across the 7 fixture rows = 1   ok  (one instant for the whole batch, so the sort column alone is not unique)
+ 
+=== E. Clamping, including the @Skip ceiling that stops an arithmetic overflow ===
+  @Take = 100000 -> 7 row(s)   ok  (clamped to 500, which is more than the fixture has)
+  @Take = 0 -> 1 row(s)   ok  (floored at 1, not at 0)
+  @Skip = -5 -> 2 row(s)   ok  (floored at 0; a negative OFFSET would have errored)
+  @Skip = INT max -> 0 row(s)   ok  (clamped to 2000000000, so @Skip + @Take does not overflow)
+ 
+=== F. @LatestOnly reduces to one row per SOURCE RECORD, not per handler ===
+  021/1=Succeeded 021/2=Skipped 022/1=Succeeded 023/1=Succeeded   ok  (4 source records, MDPROBE00021 contributing two)
+  MDPROBE00021/1 came from run 91   ok  (the newest of its three rows)
+  currently Failed source records = 0   ok  (both failures were superseded by a later success)
+ 
+=== G. A soft-deleted NEWER row must not suppress the visible older one ===
+  rows = 2, MDPROBE00021/1 now from run 90   ok  (falls back to R2 -- the handler did not vanish)
+  with @IncludeDeleted = 1, the retired row is back, from run 91   ok  (and it is marked IsDeleted so the grid can say so)
+ 
+=== H. Sorting, both directions, and the whitelist is case-insensitive ===
+  ascending by lower-case @SortBy: 021 021 021 021 022 022 023   ok  (a JavaScript grid's casing is accepted)
+  descending: 023 022 022 021 021 021 021   ok
+  most-retried source record first: AttemptCount = 3   ok
+  two identical calls agree on the order = 1   ok  (deterministic despite one shared FirstSeenDateUtc)
+ 
+=== I. Filters, and the ones that are deliberately NOT validated ===
+  @LoadRunId = R1 -> 4 row(s)   ok
+  @Status = 'failed' (lower case) -> 2 row(s)   ok  (accepted: the whitelist compare is collation-based)
+  @Outcome = 'Unchanged' -> 1 row(s)   ok
+  @SourceType = 'Z' -> 0 row(s)   ok  (accepted and empty: EPA's values are not ours to close)
+  @ActivityLocation = 'VA' -> 0 row(s)   ok  (accepted and empty: no state column here is constrained to MD)
+  @FirstSeenToUtc before the fixture -> 0 fixture row(s)   ok  (the range filter is inclusive of nothing later)
+ 
+=== J. Soft-deleted rows are invisible by default and markable on request ===
+  default = 6 row(s), @IncludeDeleted = 1 -> 7 row(s)   ok
+  rows the grid can mark as retired = 1   ok  (IsDeleted is returned, not just filtered on)
+ 
+=== K. Nothing the monitor can read carries a credential ===
+  recorded rows whose KeyParameters looks like a credential or a query string = 0   ok
+ 
+=== Cleanup: soft delete only ===
+  done.

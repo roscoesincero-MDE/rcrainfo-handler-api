@@ -1,0 +1,52 @@
+-- Why logs.uspRecordExecutionError could not write from 501's CATCH. Three states, one difference.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @n INT, @x INT;
+
+PRINT '--- 1. No enclosing transaction (the production calling pattern) ---';
+SELECT @n = COUNT (*) FROM logs.ExecutionLog WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+BEGIN TRY
+    EXEC logs.uspGetHandlerLoadStatusPage @Status = N'Faild';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT ('  XACT_STATE = ', XACT_STATE ());
+END CATCH;
+SELECT @n = COUNT (*) - @n FROM logs.ExecutionLog WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+PRINT CONCAT ('  rows recorded: ', @n);
+
+PRINT '--- 2. Inside a transaction the caller owns ---';
+SELECT @n = COUNT (*) FROM logs.ExecutionLog WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+BEGIN TRANSACTION;
+BEGIN TRY
+    EXEC logs.uspGetHandlerLoadStatusPage @Status = N'Faild';
+END TRY
+BEGIN CATCH
+    SET @x = XACT_STATE ();
+    SELECT @n = COUNT (*) - @n FROM logs.ExecutionLog WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+END CATCH;
+IF XACT_STATE () <> 0 ROLLBACK TRANSACTION;
+PRINT CONCAT ('  XACT_STATE = ', @x, ', rows recorded: ', @n);
+
+PRINT '--- 3. Is a write really refused, or is something else wrong? ---';
+BEGIN TRANSACTION;
+BEGIN TRY
+    RAISERROR ('deliberate', 16, 1);
+END TRY
+BEGIN CATCH
+    SET @x = XACT_STATE ();
+    BEGIN TRY
+        EXEC logs.uspRecordExecutionErrorUpdate
+              @ProcedureName = N'[probe].[doomed]', @ExecutionLogId = NULL
+            , @ErrorMessage = N'x', @ErrorNumber = 1, @ErrorLine = 1;
+        PRINT '  the write SUCCEEDED';
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT ('  the write was refused: error ', ERROR_NUMBER (), ' - ', ERROR_MESSAGE ());
+    END CATCH;
+END CATCH;
+IF XACT_STATE () <> 0 ROLLBACK TRANSACTION;
+PRINT CONCAT ('  XACT_STATE at the time was ', @x);
+
+UPDATE logs.ExecutionLog SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE ProcedureName IN (N'[probe].[doomed]', N'[probe].[insertexec]') AND IsDeleted = 0;

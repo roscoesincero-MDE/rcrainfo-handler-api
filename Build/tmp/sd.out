@@ -1,0 +1,73 @@
+Opened LoadRunId 37
+ 
+=== A. Refusals ===
+  ok    null LoadRunId -> @LoadRunId is required. This is the only procedure that removes anything from the mirror
+  ok    not JSON -> @Elements is not valid JSON. It must be an array of objects carrying handlerId, sourceTy
+  ok    null Reason -> @Reason is required and must be at least 10 characters. It was NULL. It is the only reco
+  ok    Reason too short -> @Reason is required and must be at least 10 characters. It was 'cleanup'. It is the only
+  ok    incomplete key -> Element 1 of @Elements is missing part of the natural key. handlerId, sourceType and seq
+  ok    handlerId too wide -> Element 1 of @Elements does not fit dbo.HandlerSource: handlerId is 16 characters (max 1
+  ok    duplicate version -> @Elements names the same version 2 times: handlerId='MDPROBE00011', sourceType='N', sequ
+  live versions after 7 refusals = 4   ok  (nothing was deleted)
+ 
+=== B. Delete the CURRENT version of a handler that has history ===
+  versionsDeleted = 1, descendantRows = 7   ok  (1 parent, 7 descendants across both depths)
+  MDPROBE00011 versions: 1=live 2=del   ok  (history survives)
+  cascade: owner=1 rawjson=1 episodic=1 epcodes=1 hsm=1 hsmcodes=1   ok  (children AND grandchildren)
+  version 1's own descendants still live = 2   ok  (the cascade is version-scoped)
+  other identifiers still live = 2   ok  (handler-grained, handler still has a live version)
+  deleted version still reads CurrentRecord=1   ok  (deleted is not superseded)
+  observation: Warning/CurrentRecordMissingInMirror [1 live versions remain, none current]   ok  (the handler is now absent from dbo.vwHandlerSource)
+  rows in dbo.vwHandlerSource for MDPROBE00011 = 0   ok  (which is exactly what the Warning reports)
+ 
+=== C. A second identical delete writes nothing and moves no audit stamp ===
+  versionsDeleted = 0, descendantRows = 0, auditDeletedDateUtc moved = no   ok  (converged; the row still says when it was really deleted)
+ 
+=== D. Delete a handler's ONLY version: the other identifiers go too ===
+  versionsDeleted = 1, descendantRows = 4, other identifiers still live = 0   ok  (2 descendants + 2 other-ids; the handler is gone)
+  observations for MDPROBE00012 = 0   ok  (nothing live is stranded)
+ 
+=== E. The audit trail is NOT cascaded ===
+  MDPROBE00011 now has no live version; live HandlerLoadStatus rows = 1   ok  (the mirror is cascaded, the audit trail is not)
+  and it still joins its (deleted) parent: rows = 1   ok  (soft delete does not break referential integrity)
+ 
+=== F. The control handler was not touched anywhere ===
+  MDPROBE00013: version=0 owner=0 rawjson=0 otherid=0   ok  (out of scope, left alone)
+ 
+=== G. A version that is already deleted is notFound, not an error ===
+  versionsDeleted = 0, descendantRows = 0   ok
+ 
+=== H. Empty array is a no-op, not an error ===
+  versionsDeleted = 0, descendantRows = 0   ok
+ 
+=== I. Comments on the successful executions, newest last ===
+  elements=1, versionsDeleted=1, descendantRows=7, otherIdentifiers=0, notFound=0, observations=1, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=1, observations=0, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Handler withdrawn from RCRAInfo entirely; confirmed by re-fetch (404).
+  elements=1, versionsDeleted=1, descendantRows=7, otherIdentifiers=0, notFound=0, observations=1, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=1, observations=0, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Handler withdrawn from RCRAInfo entirely; confirmed by re-fetch (404).
+  elements=1, versionsDeleted=1, descendantRows=7, otherIdentifiers=0, notFound=0, observations=1, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=1, observations=0, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Handler withdrawn from RCRAInfo entirely; confirmed by re-fetch (404).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Second version withdrawn; retiring the remaining history for this probe.
+  elements=1, versionsDeleted=1, descendantRows=7, otherIdentifiers=0, notFound=0, observations=1, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=1, observations=0, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Handler withdrawn from RCRAInfo entirely; confirmed by re-fetch (404).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Second version withdrawn; retiring the remaining history for this probe.
+  elements=2, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=2, observations=0, reason=Re-run of a withdrawal set after an interrupted reconcile.
+  elements=0, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=0, observations=0, reason=Reconcile found nothing to withdraw on this pass.
+  elements=1, versionsDeleted=1, descendantRows=7, otherIdentifiers=0, notFound=0, observations=1, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=1, observations=0, reason=Absent from /hd/sources/summaries on two consecutive full reconciles (G23).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Handler withdrawn from RCRAInfo entirely; confirmed by re-fetch (404).
+  elements=1, versionsDeleted=1, descendantRows=2, otherIdentifiers=2, notFound=0, observations=0, reason=Second version withdrawn; retiring the remaining history for this probe.
+  elements=2, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=2, observations=0, reason=Re-run of a withdrawal set after an interrupted reconcile.
+  elements=0, versionsDeleted=0, descendantRows=0, otherIdentifiers=0, notFound=0, observations=0, reason=Reconcile found nothing to withdraw on this pass.
+  (each must carry the reason -- it is recorded here and nowhere else)
+ 
+=== J. A closed run refuses further work ===
+  ok    -> LoadRunId 37 has Status 'Succeeded', so it is closed and no further work can be recorded against it. A d
+  MDPROBE00013 still live = 1   ok
+ 
+=== Cleanup: soft delete only ===
+  done.

@@ -1,0 +1,38 @@
+SET NOCOUNT ON;
+GO
+SELECT TOP (0) * INTO #H FROM dbo.HandlerSource;
+GO
+INSERT INTO #H (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted
+              , HandlerName, SiteLocationCity, auditDeletedBy, auditDeletedDateUtc, auditCreatedBy
+              , auditCreatedDateUtc, auditModifiedBy, auditModifiedDateUtc)
+SELECT N'MD' + RIGHT (N'0000000000' + CAST ((g.value - 1) / 4 + 1 AS NVARCHAR (10)), 10), N'MD', N'H'
+     , (g.value - 1) % 4 + 1, CASE WHEN (g.value - 1) % 4 = 3 THEN 1 ELSE 0 END, 0
+     , CHOOSE (((g.value - 1) / 4) % 4 + 1, N'ACME ', N'CHESAPEAKE ', N'TIDEWATER ', N'PATAPSCO ')
+       + CAST ((g.value - 1) / 4 + 1 AS NVARCHAR (11))
+     , CHOOSE (((g.value - 1) / 4) % 8 + 1, N'Baltimore', N'Frederick', N'Rockville', N'Annapolis'
+                                          , N'Hagerstown', N'Salisbury', N'Cumberland', N'Elkton')
+     , ORIGINAL_LOGIN (), SYSUTCDATETIME (), ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+     , ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+  FROM GENERATE_SERIES (1, 400000) AS g;
+ALTER TABLE #H ADD CONSTRAINT PK_H PRIMARY KEY CLUSTERED (HandlerSourceId);
+CREATE NONCLUSTERED INDEX IX_H_Grid ON #H (HandlerId)
+    INCLUDE (SourceType, Sequence, HandlerName, SiteLocationCity)
+    WHERE IsDeleted = 0 AND CurrentRecord = 1;
+GO
+SET SHOWPLAN_TEXT ON;
+GO
+DECLARE @Term NVARCHAR (200) = N'MD00000123', @IdShaped BIT = 1, @TotalRows INT;
+DECLARE @Prefix NVARCHAR (402) = @Term + N'%', @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND ((@IdShaped = 1 AND v.HandlerId LIKE @Prefix ESCAPE N'\')
+     OR (@IdShaped = 0 AND (v.HandlerId LIKE @Contains ESCAPE N'\'
+                         OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                         OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')))
+OPTION (RECOMPILE);
+GO
+SET SHOWPLAN_TEXT OFF;
+GO
+DROP TABLE IF EXISTS #H;
+GO

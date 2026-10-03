@@ -1,0 +1,140 @@
+Build started 9/5/2026 7:00:35 PM.
+     1>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" on node 1 (Restore target(s)).
+     1>_GetAllRestoreProjectPathItems:
+         Determining projects to restore...
+     1>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1) is building "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (2:4) on node 1 (_GenerateProjectRestoreGraph target(s)).
+     2>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.7
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.7\data\PackageOverrides.txt
+     2>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (_GenerateProjectRestoreGraph target(s)).
+     1>Restore:
+         X.509 certificate chain validation will use the default trust store selected by .NET for code signing.
+         X.509 certificate chain validation will use the default trust store selected by .NET for timestamping.
+         Assets file has not changed. Skipping assets file writing. Path: C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\project.assets.json
+         Assets file has not changed. Skipping assets file writing. Path: C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\obj\project.assets.json
+         Assets file has not changed. Skipping assets file writing. Path: C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\obj\project.assets.json
+         Restored C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj (in 49 ms).
+         Restored C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\RCRAInfo.Core.csproj (in 48 ms).
+         Restored C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj (in 49 ms).
+         
+         NuGet Config files used:
+             C:\Users\rsincero\AppData\Roaming\NuGet\NuGet.Config
+             C:\Program Files (x86)\NuGet\Config\Microsoft.VisualStudio.FallbackLocation.config
+             C:\Program Files (x86)\NuGet\Config\Microsoft.VisualStudio.Offline.config
+         
+         Feeds used:
+             https://api.nuget.org/v3/index.json
+             C:\Program Files (x86)\Microsoft SDKs\NuGetPackages\
+         All projects are up-to-date for restore.
+     1>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (Restore target(s)).
+   1:7>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" on node 1 (VSTest target(s)).
+     1>BuildProject:
+         Build started, please wait...
+   1:7>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:7) is building "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:8) on node 1 (default targets).
+   1:8>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:8) is building "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\RCRAInfo.Core.csproj" (3:6) on node 2 (default targets).
+     3>GenerateTargetFrameworkMonikerAttribute:
+       Skipping target "GenerateTargetFrameworkMonikerAttribute" because all output files are up-to-date with respect to the input files.
+       CoreGenerateAssemblyInfo:
+       Skipping target "CoreGenerateAssemblyInfo" because all output files are up-to-date with respect to the input files.
+       _GenerateSourceLinkFile:
+         Source Link is empty, file 'obj\Debug\net10.0\RCRAInfo.Core.sourcelink.json' does not exist.
+       CoreCompile:
+       Skipping target "CoreCompile" because all output files are up-to-date with respect to the input files.
+       GenerateBuildDependencyFile:
+       Skipping target "GenerateBuildDependencyFile" because all output files are up-to-date with respect to the input files.
+       CopyFilesToOutputDirectory:
+         RCRAInfo.Core -> C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\bin\Debug\net10.0\RCRAInfo.Core.dll
+     3>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\RCRAInfo.Core.csproj" (default targets).
+   1:8>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:8) is building "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (2:6) on node 1 (default targets).
+     2>GenerateTargetFrameworkMonikerAttribute:
+       Skipping target "GenerateTargetFrameworkMonikerAttribute" because all output files are up-to-date with respect to the input files.
+       CoreGenerateAssemblyInfo:
+       Skipping target "CoreGenerateAssemblyInfo" because all output files are up-to-date with respect to the input files.
+       _GenerateSourceLinkFile:
+         Source Link is empty, file 'obj\Debug\net10.0\RCRAInfo.Data.sourcelink.json' does not exist.
+       CoreCompile:
+       Skipping target "CoreCompile" because all output files are up-to-date with respect to the input files.
+       GenerateBuildDependencyFile:
+       Skipping target "GenerateBuildDependencyFile" because all output files are up-to-date with respect to the input files.
+       CopyFilesToOutputDirectory:
+         RCRAInfo.Data -> C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\bin\Debug\net10.0\RCRAInfo.Data.dll
+     2>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (default targets).
+     1>GenerateTargetFrameworkMonikerAttribute:
+       Skipping target "GenerateTargetFrameworkMonikerAttribute" because all output files are up-to-date with respect to the input files.
+       CoreGenerateAssemblyInfo:
+       Skipping target "CoreGenerateAssemblyInfo" because all output files are up-to-date with respect to the input files.
+       _GenerateSourceLinkFile:
+         Source Link is empty, file 'obj\Debug\net10.0\RCRAInfo.Data.Integration.Tests.sourcelink.json' does not exist.
+       CoreCompile:
+       Skipping target "CoreCompile" because all output files are up-to-date with respect to the input files.
+       _CopyOutOfDateSourceItemsToOutputDirectory:
+       Skipping target "_CopyOutOfDateSourceItemsToOutputDirectory" because all output files are up-to-date with respect to the input files.
+       GenerateBuildDependencyFile:
+       Skipping target "GenerateBuildDependencyFile" because all output files are up-to-date with respect to the input files.
+       GenerateBuildRuntimeConfigurationFiles:
+       Skipping target "GenerateBuildRuntimeConfigurationFiles" because all output files are up-to-date with respect to the input files.
+       CopyFilesToOutputDirectory:
+         RCRAInfo.Data.Integration.Tests -> C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\bin\Debug\net10.0\RCRAInfo.Data.Integration.Tests.dll
+     1>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (default targets).
+     1>BuildProject:
+         Build completed.
+         
+Test run for C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\bin\Debug\net10.0\RCRAInfo.Data.Integration.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.11)
+[xUnit.net 00:00:00.07]   Discovering: RCRAInfo.Data.Integration.Tests
+[xUnit.net 00:00:00.13]   Discovered:  RCRAInfo.Data.Integration.Tests
+[xUnit.net 00:00:00.15]   Starting:    RCRAInfo.Data.Integration.Tests
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "logs.uspGetLoadRunPage") [677 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "logs.uspStartLoadRun") [44 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "dbo.uspMergeHandlerSourceBatch") [259 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "dbo.uspRefreshLookupSet") [19 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "logs.uspUpsertHandlerLoadStatusSet") [19 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "dbo.uspReconcileCurrentRecord") [17 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "config.uspSetLoadWatermark") [21 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "dbo.uspSoftDeleteHandlerSourceSet") [18 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureThatLogsOnSuccessLeavesExactlyOneRow(procedure: "logs.uspCompleteLoadRun") [19 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "logs.uspCompleteLoadRun") [27 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "logs.uspGetLoadRunSummary") [20 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspSearchHandlerSource") [16 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspSoftDeleteHandlerSourceSet") [17 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspGetHandlerSourceHistoryPage") [17 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspRefreshLookupSet") [19 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "logs.uspGetHandlerLoadStatusPage") [18 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "logs.uspStartLoadRun") [18 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspGetHandlerSourceDetail") [21 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspReconcileCurrentRecord") [17 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "config.uspSetLoadWatermark") [18 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "logs.uspGetLoadRunPage") [131 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspMergeHandlerSourceBatch") [20 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "config.uspGetLoadWatermark") [21 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "logs.uspUpsertHandlerLoadStatusSet") [24 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryProcedureLogsItsFailure(procedure: "dbo.uspGetHandlerSourcePage") [21 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheDatabaseHasNoUserDefinedTableType [3 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryInstrumentedProcedureIsCovered [11 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoKeyParametersValueCarriesACredentialOrAPayload [1 s]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheOptedOutReadsLogNothingOnASuccessfulCall(procedure: "logs.uspGetHandlerLoadStatusPage") [20 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheOptedOutReadsLogNothingOnASuccessfulCall(procedure: "dbo.uspGetHandlerSourcePage") [35 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheOptedOutReadsLogNothingOnASuccessfulCall(procedure: "dbo.uspGetHandlerSourceHistoryPage") [20 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheOptedOutReadsLogNothingOnASuccessfulCall(procedure: "logs.uspGetLoadRunSummary") [15 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheOptedOutReadsLogNothingOnASuccessfulCall(procedure: "dbo.uspGetHandlerSourceDetail") [31 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheOptedOutReadsLogNothingOnASuccessfulCall(procedure: "dbo.uspSearchHandlerSource") [31 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheOptedOutReadsLogNothingOnASuccessfulCall(procedure: "config.uspGetLoadWatermark") [12 ms]
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoProcedureCatchSwallowsItsError [402 ms]
+[xUnit.net 00:00:05.84]   Finished:    RCRAInfo.Data.Integration.Tests
+  Passed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.AnEngineErrorReachesTheCallerWithItsOwnNumberAndIsLoggedWithIt [2 s]
+
+Test Run Successful.
+Total tests: 37
+     Passed: 37
+ Total time: 6.5494 Seconds
+     1>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (VSTest target(s)).
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:09.02

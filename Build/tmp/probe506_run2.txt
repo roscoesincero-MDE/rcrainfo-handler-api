@@ -1,0 +1,65 @@
+=== da4_searchhandlersource: dbo.uspSearchHandlerSource ===
+reset: retired 0 leftover fixture row(s).
+fixture: 11 row(s) inserted, ids captured from SCOPE_IDENTITY ().
+baseline: logs.ExecutionLog high-water mark 71134
+ 
+--- A. Refusals, and the one that cannot be recorded -----------------------------------------------------------
+PASS A0: a bare EXEC fails with error 201 naming @SearchTerm, before the body runs.
+PASS A0b: error 201 wrote NO log row, which is the documented limit of a required parameter.
+PASS A1: an explicit NULL @SearchTerm is refused by the same gate as a short one.
+PASS A2: a one-character term is refused, and the message says why -- an arbitrary page is not an answer.
+PASS A2b: the refusal message states that the term is deliberately not quoted, and names the table that is the reason.
+PASS A3: a whitespace-only term is refused by the length gate after trimming.
+PASS A3b: a two-character term is accepted -- the floor is 2, not 3.
+PASS A4: tab, line feed, carriage return and space are all trimmed -- a pasted term finds its 4 row(s).
+ 
+--- B. The view does the filtering, and TotalRows is counted independently --------------------------------------
+PASS B1: TotalRows agrees with an independent count over dbo.vwHandlerSource, and both are 4.
+PASS B2: none of the soft-deleted, superseded or never-stamped row(s) is searchable, and each carries the term in its name.
+PASS B3: no contact, mailing-address, owner/operator or SrcUpdatedBy column is in the search projection.
+ 
+--- R. The seven MatchRank levels, and the two branches that cannot both run ------------------------------------
+PASS R1: name prefix, name contains, city prefix and city contains rank 4, 5, 6, 7 in that order, and MatchField names the column that matched.
+PASS R2: an exact handler id is MatchRank 1 and returns exactly the one row.
+PASS R3: an id prefix is MatchRank 2 for both row(s), ordered by HandlerName, TotalRows 2.
+PASS R4: an id substring is MatchRank 3 for all 6 row(s), ordered by HandlerName within the rank.
+PASS R5: all 6 row(s) are MatchRank 3 / HandlerId -- the CASE did not fall through to the ELSE.
+PASS R6: the identifier branch produced no rank 3-7 row -- name and city were not searched at all.
+PASS R7: an identifier-shaped term that is really a name fragment returns nothing -- the documented cost of the branch rule, and the reason MatchField exists for the caller's caption.
+PASS R8: Ordinal is 1..6 with no gap and no repeat.
+ 
+--- W. LIKE metacharacters, where a typed % would otherwise match every handler in Maryland ---------------------
+PASS W1: a typed % is escaped -- ZZ% matches nothing rather than matching every ZZ row.
+PASS W2: a typed _ is escaped -- Z_QUARTZ does not match ZZQUARTZ.
+PASS W3: a typed [ is escaped -- a character class cannot be opened from the search box.
+PASS W4: a backslash, and a backslash together with a percent, are matched literally and raise no escape error.
+PASS W5: a 200-character all-backslash term escapes to 402 characters without truncation or error.
+PASS W6: a 150-character term returns an empty result set rather than a refusal.
+PASS W7: a term padded to 198 characters is not truncated at the call boundary -- it trims back to ZZQUARTZ and finds its 4 row(s).
+ 
+--- P. Paging and the clamps ------------------------------------------------------------------------------------
+PASS P1: @Take = 2 returns the first two of six, and TotalRows is 6 rather than 2.
+PASS P2: @Skip = 4 returns row(s) 5 and 6, numbered 5 and 6 rather than 1 and 2.
+PASS P3: paging past the end returns an empty result set, and TotalRows is unreadable from it.
+PASS P4: @Take = 0 is clamped up to 1, and TotalRows still reports all 6.
+PASS P5: NULL @Skip and NULL @Take behave as 0 and 25, so all 6 row(s) come back.
+PASS P6: a negative @Skip is clamped to 0 rather than widening the page.
+PASS P7: @Skip at the INT maximum is clamped, so @Skip + @Take does not overflow.
+ 
+--- L. The log rows, and the term that is not in them ----------------------------------------------------------
+PASS L1: 4 refusal(s) recorded. A read that only SELECTs still records its own failures.
+PASS L2: all 4 row(s) carry the orphan signature and recover the duration as ElapsedMs= in ContextMessage.
+PASS L3: all 4 log row(s) carry Skip, Take, TermLength and IdShaped.
+PASS L3b: an explicit NULL term is logged as TermLength=(null), not as an absent or empty value.
+PASS L4: no search term appears in any free-text column of logs.ExecutionLog. The caller typed a string; the log records its length.
+PASS L4b: no fixture handler id reaches a log column -- nothing read from the view is copied into one.
+PASS L5: no successful-path log row -- a search is not an audit event, and type-ahead would not become one.
+ 
+--- X. Transactions: what 506 must not touch ------------------------------------------------------------------
+logs.uspRecordExecutionError could not write the execution log row for this failure (error 3930). The calling transaction is doomed, so NO log row can be written until it is rolled back. The caller wrapped this call in a transaction that SET XACT_ABORT ON then aborted; a procedure that owns its transaction rolls it back before recording, and one that does not cannot. The error it hit was discarded so that the original error still reaches the caller. logs.ExecutionLog is therefore missing a row for a call that failed.
+PASS X1: inside a caller-owned doomed transaction the refusal cannot be recorded (error 3930), and 506 did not roll back what it did not open. That is the G37 boundary, measured.
+PASS X2: a successful search inside a caller transaction returns its rows and leaves @@TRANCOUNT untouched.
+ 
+--- Cleanup. Soft delete only: the fixture rows stay, retired ------------------------------------------------
+cleanup: retired 10 fixture row(s). logs.ExecutionLog is append-only and is left alone.
+=== da4_searchhandlersource: done ===
