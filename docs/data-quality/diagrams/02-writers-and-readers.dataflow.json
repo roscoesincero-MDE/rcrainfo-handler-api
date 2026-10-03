@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Where observations come from, and who reads them",
+    "output": "docs/data-quality/diagrams/02-writers-and-readers.html",
+    "viewBox": [
+      900,
+      500
+    ],
+    "legend": {
+      "mode": "hidden"
+    },
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    {
+      "label": "The step that notices"
+    },
+    {
+      "label": "…writes down what it noticed"
+    },
+    {
+      "label": "One shared table"
+    },
+    {
+      "label": "Who reads it"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "merge",
+      "type": "backend",
+      "label": "Storing A Batch",
+      "sublabel": "as EPA data is written",
+      "stage": 0,
+      "row": 0,
+      "tag": "1 kind",
+      "width": 140
+    },
+    {
+      "id": "version",
+      "type": "backend",
+      "label": "Current Version",
+      "sublabel": "confirming, withdrawing",
+      "stage": 0,
+      "row": 1,
+      "tag": "5 kinds",
+      "width": 140
+    },
+    {
+      "id": "maint",
+      "type": "backend",
+      "label": "Maintenance Steps",
+      "sublabel": "code lists, loose ends",
+      "stage": 0,
+      "row": 2,
+      "tag": "3 kinds",
+      "width": 140
+    },
+    {
+      "id": "obs",
+      "type": "database",
+      "label": "The Observation Table",
+      "sublabel": "logs.DataQualityObservation",
+      "stage": 2,
+      "row": 1,
+      "tag": "nothing is ever removed",
+      "width": 180
+    },
+    {
+      "id": "summary",
+      "type": "frontend",
+      "label": "Run Summary",
+      "sublabel": "counts by severity",
+      "stage": 3,
+      "row": 0,
+      "tag": "monitoring web app",
+      "width": 140
+    },
+    {
+      "id": "rows",
+      "type": "external",
+      "label": "The Rows Themselves",
+      "sublabel": "queried from the table",
+      "stage": 3,
+      "row": 2,
+      "tag": "no screen yet",
+      "width": 140
+    }
+  ],
+  "flows": [
+    {
+      "id": "f-merge",
+      "from": "merge",
+      "to": "obs",
+      "label": "absent data",
+      "variant": "default",
+      "route": "vertical-channel",
+      "channelX": 250,
+      "labelAt": [
+        250,
+        205
+      ]
+    },
+    {
+      "id": "f-version",
+      "from": "version",
+      "to": "obs",
+      "label": "currency",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-maint",
+      "from": "maint",
+      "to": "obs",
+      "label": "housekeeping",
+      "variant": "default",
+      "route": "vertical-channel",
+      "channelX": 320,
+      "labelAt": [
+        320,
+        340
+      ]
+    },
+    {
+      "id": "f-counts",
+      "from": "obs",
+      "to": "summary",
+      "label": "counts",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f-detail",
+      "from": "obs",
+      "to": "rows",
+      "label": "sentences",
+      "variant": "dashed"
+    }
+  ]
+}

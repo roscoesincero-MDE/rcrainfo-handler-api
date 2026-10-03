@@ -1,0 +1,27 @@
+
+
+Supporting documentation and links: 
+https://rcrainfo.atlassian.net/wiki/spaces/RUI/pages/3929604138/RCRAInfo+APIs
+https://rcrainfo.atlassian.net/wiki/spaces/RA/pages/4138205187/Exchange+Network+Node+Migration
+https://rcranodepreprod.epa.gov/rcra-api/secured/swagger2/index.jsp
+
+Requirement:
+
+Phase 1
+
+1. Download Handler data set from EPA's RCRA Info using RCRAInfo API's.
+2. Download update Handler data from EPA's RCRA Info using RCRAInfo API's.
+
+The goal is to download new Handler data so the initial load would be everything while subsequent loads will be updates only.
+
+3. Will need to mirror or create similar table structures of RCRAInfo's handler data set in SQL Server.
+
+
+Phase 2
+1.  Migrate the handler data from phase 1 to agency's ETS system.
+
+
+
+Current Plan:  Complete Phase 1.
+
+

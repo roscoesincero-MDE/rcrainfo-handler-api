@@ -1,0 +1,43 @@
+# Line endings ------------------------------------------------------------------
+# Normalize to LF in the repository, check out native. Without this, a second
+# developer with a different core.autocrlf setting sees every file as modified,
+# which buries real diffs -- and the DDL scripts in src/RCRAInfo.Database are
+# reviewed line by line before a human runs them.
+* text=auto
+
+*.sql     text
+*.md      text
+*.py      text
+*.cs      text
+*.csproj  text
+*.sln     text
+*.props   text
+*.targets text
+*.json    text
+*.txt     text
+*.yml     text
+*.mjs     text
+*.html    text
+
+# PowerShell is checked out CRLF: some Windows PowerShell hosts mis-parse LF-only
+# scripts, and the ACL script in src/RCRAInfo.Database/Deployment is run by hand.
+*.ps1     text eol=crlf
+*.cmd     text eol=crlf
+*.bat     text eol=crlf
+
+# Binary ------------------------------------------------------------------------
+*.png     binary
+*.jpg     binary
+*.gif     binary
+*.ico     binary
+*.docx    binary
+*.xlsx    binary
+*.pdf     binary
+*.dacpac  binary
+*.pfx     binary
+*.p12     binary
+*.snk     binary
+
+# Diff ---------------------------------------------------------------------------
+# Generated diagram HTML is an artifact, not source worth reading in a diff.
+*-rendered.html -diff

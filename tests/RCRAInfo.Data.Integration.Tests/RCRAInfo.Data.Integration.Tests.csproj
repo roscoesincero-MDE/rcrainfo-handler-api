@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The DA5 round-trip tests: every procedure is CALLED, against a real SQL Server, and its result is
+    materialised and checked. The offline unit tests live in the sibling project whose name ends
+    .Data.Tests; these are a separate assembly because they WRITE and this database has no hard
+    delete. Every row they write is permanent, so running them has to be a decision rather than a
+    side effect of `dotnet test`.
+
+    (That sibling is not named in full here on purpose. build/check_cross_database.py reads any
+    three-part dotted name after the word "from" as a SQL object reaching outside this database,
+    and it is right to: a rule that exempted prose would exempt a comment above the reference too.)
+
+    That decision is the RCRAINFO_INTEGRATION environment variable. Without it every test here skips;
+    with it, an unreachable server is a FAILURE rather than a skip, so a green run cannot mean the
+    suite quietly examined nothing. See IntegrationServer.
+
+    The name ends in '.Tests' on purpose. Directory.Build.props keys the test-project settings off
+    exactly that suffix, and '.IntegrationTests' would not match it.
+  -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RCRAInfo.Data\RCRAInfo.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      One implementation of repository-root discovery, shared by source rather than by copy. TestPaths
+      is internal, so linking the file compiles it into this assembly; a second copy would be a second
+      thing to keep correct.
+
+      The generated payload fixture is deliberately NOT copied to the output directory. It is read from
+      the working tree for the reason TestPaths itself gives: a copy is a thing that can be stale, and a
+      stale fixture would make these tests agree with a spec nobody is using any more.
+    -->
+    <Compile Include="..\RCRAInfo.Data.Tests\TestPaths.cs" Link="TestPaths.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

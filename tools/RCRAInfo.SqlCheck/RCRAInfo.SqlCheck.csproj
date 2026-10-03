@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The downlevel syntax gate. Development happens on SQL Server 2025; UAT and Production are 2022.
+    Compatibility level 160 does NOT block 2025-only syntax, so this tool parses every deployment
+    script with ScriptDom's TSql160Parser and fails the build on anything the 2022 grammar rejects.
+
+    Not shipped or deployed anywhere; it is a build-time check.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RCRAInfo.SqlCheck</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" />
+  </ItemGroup>
+
+</Project>

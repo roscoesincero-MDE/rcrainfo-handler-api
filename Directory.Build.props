@@ -1,0 +1,88 @@
+<Project>
+
+  <!--
+    Settings shared by every project in the solution. Kept here rather than repeated in each
+    .csproj so that "how this codebase is compiled" is one file to read and one file to change.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      Globalization invariant mode is OFF, and it must stay off: Microsoft.Data.SqlClient refuses to
+      open a connection under it, throwing NotSupportedException("Globalization Invariant Mode is not
+      supported") from SqlConnection.TryOpen. It is not a warning and there is no fallback. Every
+      application here talks to SQL Server, so `true` meant the console app would have thrown on its
+      first connection of its first unattended load.
+
+      This was set to `true` in Workstream A, when nothing in the solution had yet opened a
+      connection, and it survived every offline test. The DA5 integration suite is the first code
+      that connects, and it failed 214 of 214 tests in 550 milliseconds on its first run. That is the
+      finding those tests exist for, arriving before production rather than after.
+
+      Culture-invariant BEHAVIOUR is still required, and is still enforced, but by the code rather
+      than by the runtime: CultureInfo.InvariantCulture at every parse and format site, plus
+      NeutralLanguage below. That is the correct level for it anyway, because invariant mode would
+      have silently changed how EPA date strings parse rather than making a wrong parse visible.
+    -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+
+    <!--
+      Warnings are errors. This project spends its life mapping 444 nullable fields out of someone
+      else's JSON into a database that forbids hard deletes; a nullability warning here is a
+      NullReferenceException in an unattended overnight load.
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+
+    <!-- Deterministic builds so a rebuilt binary is byte-comparable. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!-- Culture-invariant string handling is a correctness matter when parsing EPA dates. -->
+    <NeutralLanguage>en-US</NeutralLanguage>
+  </PropertyGroup>
+
+  <!--
+    Test projects are identified by name, not by $(IsTestProject). This file is imported before the
+    body of the .csproj, so a project setting IsTestProject in its own PropertyGroup has not set it
+    yet when this condition is evaluated, so the condition would silently never match.
+  -->
+  <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Not every internal member needs an XML comment; missing-comment noise hides real warnings. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    BannedApiAnalyzers enforces the Revision 6 data-access decisions at compile time. The .sql
+    validator hook cannot see C#, and code review does not catch these reliably: every one of them
+    is a single method call that looks perfectly ordinary in a diff.
+
+    The list itself is in BannedSymbols.txt, next to this file.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" />
+  </ItemGroup>
+
+  <!--
+    RS0030 is "do not use banned APIs". It is a warning by default; here it is an error, because a
+    warning in a build that already treats warnings as errors would still be an error, and being
+    explicit means it survives someone relaxing TreatWarningsAsErrors later.
+  -->
+  <PropertyGroup>
+    <WarningsAsErrors>$(WarningsAsErrors);RS0030</WarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

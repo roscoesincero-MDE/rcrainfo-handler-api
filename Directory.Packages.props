@@ -1,0 +1,69 @@
+<Project>
+
+  <!--
+    Central package management: every version in the solution is declared here, and the .csproj
+    files carry PackageReference entries with no Version attribute. One place to read, one place to
+    change, and no chance of two projects binding different EF Core versions, which would surface
+    as a runtime type-load failure rather than a build error.
+  -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup Label="Data access">
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Hosting, configuration, logging">
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.11" />
+    <!--
+      OptionsBuilder.Bind. EF Core drags in Microsoft.Extensions.Options but not the configuration
+      binding over it, so without this the options section would have to be read by hand, which is how
+      a mistyped key becomes a default value instead of a startup failure.
+    -->
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Platform">
+    <!--
+      AR4 encrypts the SQL password with DPAPI. ProtectedData is Windows-only, which is why the
+      projects that use it set SupportedOSPlatform; the loader and the monitor both run on Windows
+      Server in every environment (G18).
+    -->
+    <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Analyzers">
+    <PackageVersion Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="5.6.0" />
+    <!--
+      The Roslyn compiler API, used by tests/RCRAInfo.Data.Tests to resolve every entry in
+      BannedSymbols.txt exactly the way BannedApiAnalyzers resolves it. Pinned to the same 5.6.0
+      generation as the analyzer so the test and the analyzer cannot disagree about what an entry
+      means. Test-only; it ships with nothing.
+    -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="SQL tooling">
+    <!--
+      ScriptDom is the downlevel gate: tools/RCRAInfo.SqlCheck parses every deployment script with
+      TSql160Parser, so syntax that does not exist on SQL Server 2022 fails the build rather than
+      the UAT deployment. See src/RCRAInfo.Database/README.md for what this does and does not catch.
+    -->
+    <PackageVersion Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="180.117.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Test">
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
+    <PackageVersion Include="coverlet.collector" Version="10.1.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "What the loader does with one record from EPA",
+    "output": "docs/data-quality/diagrams/01-three-outcomes.html",
+    "viewBox": [
+      900,
+      500
+    ],
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "hidden"
+    }
+  },
+  "stages": [
+    {
+      "label": "From EPA"
+    },
+    {
+      "label": "The loader"
+    },
+    {
+      "label": "What is recorded"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "record",
+      "type": "external",
+      "label": "One Record From EPA",
+      "sublabel": "one version of one handler",
+      "stage": 0,
+      "row": 1,
+      "tag": "RCRAInfo API",
+      "width": 140
+    },
+    {
+      "id": "loader",
+      "type": "backend",
+      "label": "The Loader",
+      "sublabel": "maps the payload into our tables",
+      "stage": 1,
+      "row": 1,
+      "tag": "runs at night",
+      "width": 140
+    },
+    {
+      "id": "clean",
+      "type": "database",
+      "label": "Stored, Nothing Noted",
+      "sublabel": "dbo.HandlerSource",
+      "stage": 2,
+      "row": 0,
+      "tag": "the ordinary case",
+      "width": 140
+    },
+    {
+      "id": "noted",
+      "type": "database",
+      "label": "Stored, And Noted",
+      "sublabel": "the record AND an observation",
+      "stage": 2,
+      "row": 1,
+      "tag": "this document",
+      "width": 140
+    },
+    {
+      "id": "failed",
+      "type": "database",
+      "label": "Not Stored At All",
+      "sublabel": "logs.HandlerLoadStatus = Failed",
+      "stage": 2,
+      "row": 2,
+      "tag": "a different screen",
+      "width": 140
+    }
+  ],
+  "flows": [
+    {
+      "id": "arrives",
+      "from": "record",
+      "to": "loader",
+      "label": "nightly",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ordinary",
+      "from": "loader",
+      "to": "clean",
+      "label": "as expected",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "left",
+      "via": [
+        [
+          315,
+          157
+        ]
+      ]
+    },
+    {
+      "id": "notable",
+      "from": "loader",
+      "to": "noted",
+      "label": "noticed",
+      "variant": "emphasis"
+    },
+    {
+      "id": "blocking",
+      "from": "loader",
+      "to": "failed",
+      "label": "unstorable",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          315,
+          385
+        ]
+      ]
+    }
+  ]
+}

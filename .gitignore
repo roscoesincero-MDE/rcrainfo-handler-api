@@ -1,0 +1,55 @@
+# Secrets ---------------------------------------------------------------------
+# AR4 stores the SQL password in appsettings.json and the application rewrites the
+# file in place to encrypt it. The file must never reach source control: it holds
+# plaintext until first run, and the encrypted form is machine-bound.
+appsettings.json
+appsettings.*.json
+!appsettings.Template.json
+*.pfx
+*.p12
+secrets.json
+
+# The RCRAInfo API ID and API Key. RCRAInfo displays the key ONCE, at generation, so the developer
+# pastes it somewhere immediately -- and the nearest text file is the working directory. This entry
+# exists because a 93-byte apiKey.txt was sitting in the repo root, untracked and unignored, one
+# `git add -A` away from being published. The key belongs in the seeding procedure or a password
+# manager; the pattern is broad because the next one will be called something slightly different.
+apiKey.txt
+*apikey*.txt
+*apikey*.json
+*api-key*.txt
+*api_key*.txt
+dev-credentials.json
+
+# .NET -------------------------------------------------------------------------
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# SQL project ------------------------------------------------------------------
+*.dbmdl
+*.jfm
+*.dacpac
+*.scmp
+
+# Scratch probes ---------------------------------------------------------------
+# build/tmp holds *.probesql -- throwaway scripts run by hand against the dev database to measure
+# something once. They are evidence while a workstream is open and noise afterwards; what they
+# measured belongs in Phase1-Analysis.md, not in the tree. See build/fixtures/README.md for why the
+# extension is not .sql.
+build/tmp/
+
+# Python tooling ---------------------------------------------------------------
+# The validator hook and the build guardrails are Python; their bytecode is not source.
+__pycache__/
+*.pyc
+
+# Claude Code ------------------------------------------------------------------
+# Project skills, hooks and settings are shared. Local overrides are not.
+.claude/settings.local.json
+
+# OS ---------------------------------------------------------------------------
+Thumbs.db
+desktop.ini
