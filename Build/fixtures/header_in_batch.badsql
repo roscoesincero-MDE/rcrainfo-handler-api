@@ -1,0 +1,94 @@
+-- The header block has to be in the SAME BATCH as the CREATE, or the deployed object has no header.
+--
+-- This is not a style rule and it was not hypothetical. sys.sql_modules stores only the batch that
+-- contains CREATE, so a header separated from it by a GO is present in the file and absent from the
+-- database. sp_helptext, OBJECT_DEFINITION and SSMS "Script as CREATE" all then show an object with no
+-- header -- which is where a maintainer actually reads one, since nobody opens the deployment script to
+-- find out what a procedure does.
+--
+-- Measured on 2026-09-05, after MDE observed it in review: all eleven procedures in this database
+-- returned HeaderPresent = no, and both views returned YES. The views were never at risk because nothing
+-- sits between their header and their CREATE. Every procedure carried a script-level SET XACT_ABORT ON
+-- followed by GO, placed below the header because that is where the eye puts it. The fix in each file was
+-- to move that pair ABOVE the header, not to drop it -- CLAUDE.md requires the SET, and CREATE OR ALTER
+-- PROCEDURE must be first in its batch, so the GO cannot simply be deleted.
+--
+-- The rule reports the STRANDED FIELDS by name and the line number of the GO that stranded them, because
+-- the fix is to move one line and the message should say which one.
+--
+-- The first object must not be reported: its header is the last thing before CREATE, with the SET and its
+-- GO above. The last must not be reported either -- there is no GO between its header and its CREATE at
+-- all, which is the ordinary case for a view and for the second object in a multi-object script.
+--
+-- EXPECT: PROCEDURE dbo.uspHeaderStrandedByGo has its header block separated from the CREATE by the GO on line
+-- EXPECT: and the deployed object has no header: ObjectName, Author, CreateDate, Description, Modification History
+
+SET XACT_ABORT ON;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspHeaderInsideTheBatch
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  CORRECT, and must not be reported. SET XACT_ABORT ON and its GO are above the header, so the
+              header is the last thing before CREATE and travels into sys.sql_modules with the definition.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspHeaderInsideTheBatch
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        SELECT 1 AS Ok;
+    END TRY
+    BEGIN CATCH
+        EXEC logs.uspRecordExecutionError @ProcedureName = N'[dbo].[uspHeaderInsideTheBatch]'
+                                        , @ExecutionLogId = NULL;
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspHeaderStrandedByGo
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  The defect. Everything in this comment block is in the file and none of it is in the
+              database, because of the single GO five lines below it.
+Modification History:
+***********************************************************************************************************************/
+SET XACT_ABORT ON;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.uspHeaderStrandedByGo
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        SELECT 1 AS Ok;
+    END TRY
+    BEGIN CATCH
+        EXEC logs.uspRecordExecutionError @ProcedureName = N'[dbo].[uspHeaderStrandedByGo]'
+                                        , @ExecutionLogId = NULL;
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.vwNoBatchBreakAtAll
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  Must not be reported. No GO stands between this header and its CREATE, so there is nothing
+              for the rule to complain about -- the ordinary shape, and the reason every view in the real
+              database kept its header while no procedure did.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER VIEW dbo.vwNoBatchBreakAtAll
+AS
+SELECT 1 AS Ok;
+GO

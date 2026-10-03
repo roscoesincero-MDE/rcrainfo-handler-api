@@ -1,0 +1,25 @@
+-- Extended properties applied directly. This is the most common re-run failure in the whole
+-- project: sp_addextendedproperty succeeds exactly once and errors on every run after that, while
+-- sp_updateextendedproperty errors on the first. Neither is re-runnable in either direction, which
+-- is the entire reason util.uspSetObjectDescription exists.
+--
+-- EXPECT: sp_addextendedproperty is not re-runnable
+-- EXPECT: sp_updateextendedproperty is not re-runnable
+
+SET XACT_ABORT ON;
+GO
+
+EXEC sys.sp_addextendedproperty
+    @name = N'MS_Description',
+    @value = N'One handler as RCRAInfo reports it.',
+    @level0type = N'SCHEMA', @level0name = N'dbo',
+    @level1type = N'TABLE',  @level1name = N'HandlerSource';
+GO
+
+EXEC sys.sp_updateextendedproperty
+    @name = N'MS_Description',
+    @value = N'One handler as RCRAInfo reports it.',
+    @level0type = N'SCHEMA', @level0name = N'dbo',
+    @level1type = N'TABLE',  @level1name = N'HandlerSource',
+    @level2type = N'COLUMN', @level2name = N'HandlerId';
+GO

@@ -1,0 +1,36 @@
+-- Cross-database and cross-server references. In UAT and Production the ETS database is on a
+-- DIFFERENT SQL Server, so every one of these works on the developer's single instance and fails
+-- in the environments that matter -- at run time, not at deploy time.
+--
+-- EXPECT: epal_issi is a different database
+-- EXPECT: three-part name references another database
+-- EXPECT: four-part name reaches another server
+-- EXPECT: synonym pointing outside this database
+-- EXPECT: ad-hoc distributed query
+
+SET XACT_ABORT ON;
+GO
+
+/* A three-part name. Resolves on the workstation, fails in UAT. */
+SELECT h.HandlerId
+FROM   epal_issi.dbo.Handler AS h;
+GO
+
+/* A four-part name, which needs a linked server to exist at all. */
+SELECT s.HandlerId
+FROM   ETSPROD.epal_issi.dbo.Handler AS s;
+GO
+
+/* A synonym is the worst version: the dependency is still there, now spelled like a local table. */
+CREATE SYNONYM dbo.EtsHandler
+    FOR epal_issi.dbo.Handler;
+GO
+
+/* Ad-hoc distributed query. RCRAInfo reads no other server. */
+SELECT *
+FROM   OPENQUERY (ETSPROD, N'SELECT HandlerId FROM dbo.Handler');
+GO
+
+SELECT *
+FROM   OPENROWSET (N'SQLNCLI', N'Server=ETSPROD;Trusted_Connection=yes;', N'SELECT 1 AS One') AS r;
+GO

@@ -1,0 +1,28 @@
+-- A table that looks finished and is not. Three failures, and the second one is the interesting
+-- one: DEFAULT (ORIGINAL_LOGIN ()) returns sysname, which IS NVARCHAR(128), so a narrower column
+-- makes the default itself raise a truncation error. The table accepts no rows at all, and the
+-- error names the constraint rather than the column width, so it reads like a default-value bug.
+--
+-- EXPECT: is missing required audit column 'auditDeletedBy'
+-- EXPECT: is missing required audit column 'auditDeletedDateUtc'
+-- EXPECT: must be at least NVARCHAR(128)
+-- EXPECT: must be NVARCHAR because
+-- EXPECT: has no MS_Description extended property
+-- EXPECT: should be PascalCase with no type prefix
+
+SET XACT_ABORT ON;
+GO
+
+IF OBJECT_ID (N'dbo.tbl_handler_notes', N'U') IS NULL
+    CREATE TABLE dbo.tbl_handler_notes
+    (
+        NoteId               INT             NOT NULL IDENTITY (1, 1),
+        HandlerId            NVARCHAR (12)   NOT NULL,
+        NoteText             NVARCHAR (400)  NULL,
+        IsDeleted            BIT             NOT NULL CONSTRAINT DF_dbo_tbl_handler_notes_IsDeleted            DEFAULT (0),
+        auditCreatedBy       NVARCHAR (100)  NOT NULL CONSTRAINT DF_dbo_tbl_handler_notes_auditCreatedBy       DEFAULT (ORIGINAL_LOGIN ()),
+        auditCreatedDateUtc  DATETIME2       NOT NULL CONSTRAINT DF_dbo_tbl_handler_notes_auditCreatedDateUtc  DEFAULT (SYSUTCDATETIME ()),
+        auditModifiedBy      VARCHAR (128)   NOT NULL CONSTRAINT DF_dbo_tbl_handler_notes_auditModifiedBy      DEFAULT (ORIGINAL_LOGIN ()),
+        auditModifiedDateUtc DATETIME2       NOT NULL CONSTRAINT DF_dbo_tbl_handler_notes_auditModifiedDateUtc DEFAULT (SYSUTCDATETIME ())
+    );
+GO

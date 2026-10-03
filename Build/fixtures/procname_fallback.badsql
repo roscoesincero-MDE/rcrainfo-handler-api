@@ -1,0 +1,132 @@
+-- The AR8 @ProcName fallback, which has to be THIS object's own name and nothing else.
+--
+-- Added in Workstream DA1, after the defect was found live in the deployed database by the
+-- chained-call assertion in build/check_permission_posture.py. OBJECT_NAME (@@PROCID) and
+-- OBJECT_SCHEMA_NAME (@@PROCID) return NULL for a principal denied metadata visibility, and script
+-- 050 denies exactly that to both application logins. Measured: RCRAInfoMonitor holds EXECUTE = 1 on
+-- logs.uspGetLoadRunPage and still reads NULL from OBJECT_ID (N'logs.uspGetLoadRunPage'), because
+-- permission to run an object is not permission to see its name.
+--
+-- So the COALESCE is not a defensive nicety for a template pasted into a query window -- it is the
+-- branch EVERY application call takes. With the original placeholder there, every row the console app
+-- and the web app had ever written carried no procedure name, which is the one column the monitoring
+-- web app groups by.
+--
+-- The two failing shapes below are the two that actually happen. The placeholder is what the template
+-- shipped with. The stale copy is what happens next: the block is copied from a working procedure and
+-- the parameter list is edited, which is exactly what the template tells you to do, and the literal is
+-- not part of the parameter list so nobody looks at it. It is the worse of the two, because the log
+-- then attributes one procedure's calls to another and reads as plausible.
+--
+-- The first object is CORRECT and must not be reported. The last has no @@PROCID at all -- an
+-- uninstrumented view, which is legitimate -- and must not be reported either, or the rule would
+-- demand the AR8 block on objects that are exempt from it.
+--
+-- EXPECT: PROCEDURE dbo.uspPlaceholderFallback derives @ProcName from @@PROCID but its COALESCE fallback is not N'[dbo].[uspPlaceholderFallback]'
+-- EXPECT: PROCEDURE dbo.uspStaleCopiedFallback derives @ProcName from @@PROCID but its COALESCE fallback is not N'[dbo].[uspStaleCopiedFallback]'
+
+SET XACT_ABORT ON;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspCorrectFallback
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  Correct. The literal matches this procedure's own schema-qualified, bracket-quoted name,
+              so the applications log under the right name even though they cannot resolve it.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspCorrectFallback
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @ProcName NVARCHAR (300) = COALESCE (QUOTENAME (OBJECT_SCHEMA_NAME (@@PROCID))
+                                               + N'.' + QUOTENAME (OBJECT_NAME (@@PROCID))
+                                              , N'[dbo].[uspCorrectFallback]');
+
+    -- Minimal error-recording TRY/CATCH, present so that this fixture provokes the @ProcName rule
+    -- and ONLY the @ProcName rule. Without it every procedure here also trips "has no BEGIN TRY",
+    -- which would make the positive control below fail a rule it is supposed to demonstrate passing.
+    BEGIN TRY
+        SELECT @ProcName AS ProcedureName;
+    END TRY
+    BEGIN CATCH
+        EXEC logs.uspRecordExecutionError @ProcedureName = @ProcName, @ExecutionLogId = NULL;
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspPlaceholderFallback
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  The shape the template shipped with. Runs, never errors, and logs every application call
+              under a string that names no procedure.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspPlaceholderFallback
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @ProcName NVARCHAR (300) = COALESCE (QUOTENAME (OBJECT_SCHEMA_NAME (@@PROCID))
+                                               + N'.' + QUOTENAME (OBJECT_NAME (@@PROCID))
+                                              , N'(ad-hoc batch)');
+
+    -- Minimal error-recording TRY/CATCH, present so that this fixture provokes the @ProcName rule
+    -- and ONLY the @ProcName rule. Without it every procedure here also trips "has no BEGIN TRY",
+    -- which would make the positive control below fail a rule it is supposed to demonstrate passing.
+    BEGIN TRY
+        SELECT @ProcName AS ProcedureName;
+    END TRY
+    BEGIN CATCH
+        EXEC logs.uspRecordExecutionError @ProcedureName = @ProcName, @ExecutionLogId = NULL;
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspStaleCopiedFallback
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  The literal was copied along with the AR8 block and never updated. Worse than the
+              placeholder: the log attributes these calls to a different procedure that really exists.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspStaleCopiedFallback
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @ProcName NVARCHAR (300) = COALESCE (QUOTENAME (OBJECT_SCHEMA_NAME (@@PROCID))
+                                               + N'.' + QUOTENAME (OBJECT_NAME (@@PROCID))
+                                              , N'[dbo].[uspCorrectFallback]');
+
+    -- Minimal error-recording TRY/CATCH, present so that this fixture provokes the @ProcName rule
+    -- and ONLY the @ProcName rule. Without it every procedure here also trips "has no BEGIN TRY",
+    -- which would make the positive control below fail a rule it is supposed to demonstrate passing.
+    BEGIN TRY
+        SELECT @ProcName AS ProcedureName;
+    END TRY
+    BEGIN CATCH
+        EXEC logs.uspRecordExecutionError @ProcedureName = @ProcName, @ExecutionLogId = NULL;
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.vwNotInstrumented
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  No @@PROCID, so the rule must stay silent. A view cannot carry the AR8 block, and neither
+              can the four logging procedures or util.uspSetObjectDescription -- all exempt by AR8.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER VIEW dbo.vwNotInstrumented
+AS
+SELECT 1 AS Ok;
+GO

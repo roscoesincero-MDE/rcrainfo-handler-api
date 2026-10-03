@@ -1,0 +1,48 @@
+-- SQL Server 2025-only syntax. The workstation runs 2025, so every statement here compiles and
+-- runs during development. UAT and Production run 2022, where each one is a syntax error.
+--
+-- EXPECT: regex function is SQL Server 2025 only
+-- EXPECT: SQL Server 2025 only; not available on 2022
+-- EXPECT: OPTIMIZED_LOCKING is SQL Server 2025 only
+-- EXPECT: native json type is SQL Server 2025 only
+-- EXPECT: the VECTOR type is SQL Server 2025 only
+-- EXPECT: vector functions are SQL Server 2025 only
+
+SET XACT_ABORT ON;
+GO
+
+IF OBJECT_ID (N'dbo.Downlevel', N'U') IS NULL
+    CREATE TABLE dbo.Downlevel
+    (
+        DownlevelId          INT             NOT NULL IDENTITY (1, 1),
+        Payload              json            NOT NULL,
+        Embedding            VECTOR (1998)   NULL,
+        IsDeleted            BIT             NOT NULL CONSTRAINT DF_dbo_Downlevel_IsDeleted            DEFAULT (0),
+        auditDeletedBy       NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_Downlevel_auditDeletedBy       DEFAULT (ORIGINAL_LOGIN ()),
+        auditDeletedDateUtc  DATETIME2       NOT NULL CONSTRAINT DF_dbo_Downlevel_auditDeletedDateUtc  DEFAULT (SYSUTCDATETIME ()),
+        auditCreatedBy       NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_Downlevel_auditCreatedBy       DEFAULT (ORIGINAL_LOGIN ()),
+        auditCreatedDateUtc  DATETIME2       NOT NULL CONSTRAINT DF_dbo_Downlevel_auditCreatedDateUtc  DEFAULT (SYSUTCDATETIME ()),
+        auditModifiedBy      NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_Downlevel_auditModifiedBy      DEFAULT (ORIGINAL_LOGIN ()),
+        auditModifiedDateUtc DATETIME2       NOT NULL CONSTRAINT DF_dbo_Downlevel_auditModifiedDateUtc DEFAULT (SYSUTCDATETIME ())
+    );
+GO
+
+EXEC util.uspSetObjectDescription
+    @SchemaName = N'dbo',
+    @ObjectName = N'Downlevel',
+    @Description = N'Fixture only.';
+GO
+
+ALTER DATABASE CURRENT SET OPTIMIZED_LOCKING = ON;
+GO
+
+SELECT JSON_ARRAYAGG (d.DownlevelId) AS Ids
+FROM   dbo.Downlevel AS d
+WHERE  d.IsDeleted = 0
+       AND REGEXP_LIKE (CAST (d.Payload AS NVARCHAR (MAX)), N'^MD[0-9]+$');
+GO
+
+SELECT VECTOR_DISTANCE (N'cosine', d.Embedding, d.Embedding) AS Distance
+FROM   dbo.Downlevel AS d
+WHERE  d.IsDeleted = 0;
+GO

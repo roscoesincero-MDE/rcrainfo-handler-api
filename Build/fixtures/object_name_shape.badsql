@@ -1,0 +1,130 @@
+-- Object name SHAPE, and the header block being checked PER OBJECT rather than cumulatively.
+--
+-- Both rules were added in Workstream DA0 after MDE's supplied logging template walked through the
+-- gate. `usp_Start_Execution_Logging` starts with `usp`, and until DA0 that was the entire check --
+-- the prefix, never what follows it. PascalCase was enforced on tables and on nothing else.
+--
+-- The second rule is subtler and this fixture is the only place it is tested. The header search
+-- window used to be the whole file up to the object's CREATE, so every object after the first
+-- inherited the earlier objects' header fields. A file whose first procedure was documented let
+-- every later object ship with no header at all. The last object below is the regression test: it
+-- has no header of its own and must be reported as missing all five fields, even though the five
+-- objects above it are fully documented.
+--
+-- The first object is CORRECT on both counts and must not be reported. A fixture where everything
+-- is wrong cannot tell a rule that fires correctly from a rule that fires on everything.
+--
+-- EXPECT: PROCEDURE 'usp_Record_Execution_Error' is not PascalCase after the 'usp' prefix
+-- EXPECT: PROCEDURE 'uspmergehandlersource' is not PascalCase after the 'usp' prefix
+-- EXPECT: VIEW 'vw_failed_calls' is not PascalCase after the 'vw' prefix
+-- EXPECT: FUNCTION 'GetElapsedBucket' should be prefixed 'udf'
+-- EXPECT: FUNCTION 'udfSplitKeyParameters' should be prefixed 'tvf'
+-- EXPECT: PROCEDURE logs.uspNoHeaderOfItsOwn is missing the standard header block (absent: ObjectName, Author, CreateDate, Description, Modification History)
+
+SET XACT_ABORT ON;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   logs.uspGoodName
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  Correct on both counts. Must NOT appear in the report.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE logs.uspGoodName
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT 1 AS Ok;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   logs.usp_Record_Execution_Error
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  snake_case after a correct prefix. This is the shape MDE's supplied template used.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE logs.usp_Record_Execution_Error
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT 1 AS Ok;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   logs.uspmergehandlersource
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  All lower case after the prefix. No underscore, so a naive underscore check misses it.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE logs.uspmergehandlersource
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT 1 AS Ok;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   logs.vw_failed_calls
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  The same defect on a view, because the rule is not procedure-specific.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER VIEW logs.vw_failed_calls
+AS
+SELECT e.ExecutionLogId
+FROM   logs.ExecutionLog AS e
+WHERE  e.Successful = 0
+  AND  e.IsDeleted  = 0;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   logs.GetElapsedBucket
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  Scalar function with no prefix at all. Must be told 'udf', not 'tvf' -- the classifier
+              reads the first RETURNS after the name, and the tvf-shaped function below must not
+              pull this one over with it.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER FUNCTION logs.GetElapsedBucket (@ElapsedMilliseconds INT)
+RETURNS NVARCHAR (20)
+AS
+BEGIN
+    RETURN CASE WHEN @ElapsedMilliseconds < 1000 THEN N'fast' ELSE N'slow' END;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   logs.udfSplitKeyParameters
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  Table-valued, so 'udf' is the wrong prefix even though it is A prefix. The suggested
+              replacement must swap the prefix rather than stack on top of it.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER FUNCTION logs.udfSplitKeyParameters (@KeyParameters NVARCHAR (MAX))
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT value AS Fragment
+    FROM   STRING_SPLIT (@KeyParameters, N',')
+);
+GO
+
+-- No header block. Everything above is documented, so this object is only reported if the header
+-- window is per-object. This is the regression test for the cumulative-window defect.
+CREATE OR ALTER PROCEDURE logs.uspNoHeaderOfItsOwn
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT 1 AS Ok;
+END;
+GO

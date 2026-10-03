@@ -1,0 +1,37 @@
+-- Unguarded CREATE. The developer runs these scripts by hand (G3), so the second run must change
+-- nothing and report nothing. Every one of these statements succeeds once and errors after that,
+-- which is how a script stops being run at all and starts being run "only the parts that are new".
+--
+-- EXPECT: unguarded CREATE SCHEMA
+-- EXPECT: unguarded CREATE TABLE
+-- EXPECT: unguarded CREATE INDEX
+
+SET XACT_ABORT ON;
+GO
+
+CREATE SCHEMA staging;
+GO
+
+CREATE TABLE dbo.Unguarded
+(
+    UnguardedId          INT             NOT NULL IDENTITY (1, 1),
+    HandlerId            NVARCHAR (12)   NOT NULL,
+    IsDeleted            BIT             NOT NULL CONSTRAINT DF_dbo_Unguarded_IsDeleted            DEFAULT (0),
+    auditDeletedBy       NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_Unguarded_auditDeletedBy       DEFAULT (ORIGINAL_LOGIN ()),
+    auditDeletedDateUtc  DATETIME2       NOT NULL CONSTRAINT DF_dbo_Unguarded_auditDeletedDateUtc  DEFAULT (SYSUTCDATETIME ()),
+    auditCreatedBy       NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_Unguarded_auditCreatedBy       DEFAULT (ORIGINAL_LOGIN ()),
+    auditCreatedDateUtc  DATETIME2       NOT NULL CONSTRAINT DF_dbo_Unguarded_auditCreatedDateUtc  DEFAULT (SYSUTCDATETIME ()),
+    auditModifiedBy      NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_Unguarded_auditModifiedBy      DEFAULT (ORIGINAL_LOGIN ()),
+    auditModifiedDateUtc DATETIME2       NOT NULL CONSTRAINT DF_dbo_Unguarded_auditModifiedDateUtc DEFAULT (SYSUTCDATETIME ())
+);
+GO
+
+CREATE NONCLUSTERED INDEX IX_dbo_Unguarded_HandlerId
+    ON dbo.Unguarded (HandlerId);
+GO
+
+EXEC util.uspSetObjectDescription
+    @SchemaName = N'dbo',
+    @ObjectName = N'Unguarded',
+    @Description = N'Fixture only.';
+GO

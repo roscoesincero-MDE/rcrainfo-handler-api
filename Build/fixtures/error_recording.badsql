@@ -1,0 +1,160 @@
+-- Every procedure records its own errors -- a read-only one included.
+--
+-- MDE's review finding, 2026-09-05. In another MDE application a procedure whose entire body was a
+-- single SELECT called a scalar user-defined function inside that SELECT. The function errored. Nothing
+-- wrote a row anywhere, because "it only reads" had been taken to mean "it cannot fail in a way worth
+-- recording". A read owns no INSERT, but a UDF, a view over a view, a computed column, a conversion, a
+-- deadlock, or a permission it turns out not to hold can all fail inside one.
+--
+-- The rule is deliberately NOT "every procedure is instrumented". A read still skips the
+-- logs.ExecutionLog start row and the completion UPDATE -- that is DA1 review decision 2, and it is a
+-- cost question about a monitoring grid that refreshes. What a read may not skip is the CATCH and the
+-- call inside it.
+--
+-- The three failing shapes below are the three that happen. No CATCH at all is the original defect. A
+-- CATCH holding only ;THROW; is the one this rule exists for, because it LOOKS handled: same error
+-- number, line and severity reach the caller, and nothing is recorded -- so the omission is invisible
+-- in every way except the one that matters. Recording without re-raising is the opposite failure and
+-- the worst of the three: the row is written, the caller is told the call succeeded, and a loader goes
+-- on to advance a watermark past data it never got.
+--
+-- The first and last objects must NOT be reported. The first is a read carrying error-only
+-- instrumentation, which is the shape 512_config.uspGetLoadWatermark.sql uses: @ExecutionLogId = NULL
+-- sends the MERGE in logs.uspRecordExecutionErrorUpdate down its orphan-INSERT branch on purpose. The
+-- last is logs.uspRecordExecutionError itself, which cannot call itself from its own CATCH -- that is an
+-- unbounded recursion on the exact failure it exists to survive -- and is one of the five AR8 exemptions.
+--
+-- EXPECT: PROCEDURE dbo.uspNoCatchAtAll has no BEGIN TRY
+-- EXPECT: PROCEDURE dbo.uspCatchThatRecordsNothing has a TRY/CATCH that never calls logs.uspRecordExecutionError
+-- EXPECT: PROCEDURE dbo.uspRecordsButSwallows records its error but does not re-raise it
+
+SET XACT_ABORT ON;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspErrorOnlyRead
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  CORRECT, and must not be reported. A read with error-only instrumentation: no start row and
+              no completion UPDATE on the successful path, a CATCH that always records, and a bare
+              rethrow. @ExecutionLogId is NULL because none was ever opened.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspErrorOnlyRead
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @ProcName    NVARCHAR (300) = COALESCE (QUOTENAME (OBJECT_SCHEMA_NAME (@@PROCID))
+                                                  + N'.' + QUOTENAME (OBJECT_NAME (@@PROCID))
+                                                 , N'[dbo].[uspErrorOnlyRead]')
+          , @ErrorMsg    NVARCHAR (MAX) = NULL
+          , @ErrorNumber INT            = NULL;
+
+    BEGIN TRY
+        SELECT dbo.udfSomethingThatCanFail (1) AS Value;
+    END TRY
+    BEGIN CATCH
+        SELECT @ErrorNumber = ERROR_NUMBER ()
+             , @ErrorMsg    = ERROR_MESSAGE ();
+
+        EXEC logs.uspRecordExecutionError
+              @ProcedureName  = @ProcName
+            , @ExecutionLogId = NULL
+            , @ErrorMessage   = @ErrorMsg
+            , @ErrorNumber    = @ErrorNumber;
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspNoCatchAtAll
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  The original defect, verbatim in shape: one SELECT, a UDF inside it, no TRY/CATCH. When the
+              function errors the caller sees it and the database keeps no record that it happened.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspNoCatchAtAll
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SELECT dbo.udfSomethingThatCanFail (1) AS Value;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspCatchThatRecordsNothing
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  The shape this rule exists for. A CATCH holding only ;THROW; is behaviourally identical to
+              no CATCH -- so it reads as handled in review, and records nothing.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspCatchThatRecordsNothing
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        SELECT dbo.udfSomethingThatCanFail (1) AS Value;
+    END TRY
+    BEGIN CATCH
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   dbo.uspRecordsButSwallows
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  The opposite failure, and the worst of the three. The error is recorded and the caller is
+              told the call succeeded, so a loader advances a watermark past data it never received.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE dbo.uspRecordsButSwallows
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @ProcName NVARCHAR (300) = COALESCE (QUOTENAME (OBJECT_SCHEMA_NAME (@@PROCID))
+                                               + N'.' + QUOTENAME (OBJECT_NAME (@@PROCID))
+                                              , N'[dbo].[uspRecordsButSwallows]');
+
+    BEGIN TRY
+        SELECT dbo.udfSomethingThatCanFail (1) AS Value;
+    END TRY
+    BEGIN CATCH
+        EXEC logs.uspRecordExecutionError
+              @ProcedureName  = @ProcName
+            , @ExecutionLogId = NULL
+            , @ErrorMessage   = N'swallowed';
+    END CATCH;
+END;
+GO
+
+/***********************************************************************************************************************
+ObjectName:   logs.uspRecordExecutionError
+Author:       rsincero
+CreateDate:   2026-09-05
+Description:  EXEMPT, and must not be reported. One of the five AR8 exemptions: the four logging
+              procedures cannot call the logging procedures, and util.uspSetObjectDescription runs in
+              script 030 before logs.ExecutionLog exists. The list in validate-sql.py is closed.
+Modification History:
+***********************************************************************************************************************/
+CREATE OR ALTER PROCEDURE logs.uspRecordExecutionError
+      @ProcedureName NVARCHAR (300)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT @ProcedureName AS ProcedureName;
+END;
+GO

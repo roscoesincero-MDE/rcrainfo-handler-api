@@ -1,0 +1,33 @@
+-- View and procedure conventions. CREATE without OR ALTER fails on the second run; worse, the
+-- workaround someone reaches for is DROP then CREATE, which assigns a new object_id and silently
+-- discards every grant and every extended property attached to the old one.
+--
+-- EXPECT: must be CREATE OR ALTER VIEW
+-- EXPECT: must be CREATE OR ALTER PROCEDURE
+-- EXPECT: is missing the standard header block
+-- EXPECT: VIEW 'HandlerList' should be prefixed 'vw'
+-- EXPECT: PROCEDURE 'GetHandlers' should be prefixed 'usp'
+
+SET XACT_ABORT ON;
+GO
+
+CREATE VIEW dbo.HandlerList
+AS
+SELECT h.HandlerId
+FROM   dbo.HandlerSource AS h
+WHERE  h.IsDeleted = 0;
+GO
+
+CREATE PROCEDURE dbo.GetHandlers
+    @PageNumber INT = 1
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT h.HandlerId
+    FROM   dbo.HandlerSource AS h
+    WHERE  h.IsDeleted = 0
+    ORDER BY h.HandlerId
+    OFFSET (@PageNumber - 1) * 100 ROWS FETCH NEXT 100 ROWS ONLY;
+END;
+GO

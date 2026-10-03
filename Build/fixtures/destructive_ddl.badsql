@@ -1,0 +1,49 @@
+-- Hard deletes, in every form they turn up in. There is no hard delete anywhere in this database
+-- (AR7), and the usual trick for making a script re-runnable -- DROP then CREATE -- is exactly the
+-- thing that destroys real data on the second run.
+--
+-- EXPECT: DROP TABLE destroys data
+-- EXPECT: TRUNCATE TABLE is a hard delete
+-- EXPECT: DROP COLUMN destroys data
+-- EXPECT: DROP DATABASE is never part of a deployment script
+-- EXPECT: DROP SCHEMA is never part of a deployment script
+-- EXPECT: hard DELETE is not permitted
+-- EXPECT: ON DELETE CASCADE is not permitted
+
+SET XACT_ABORT ON;
+GO
+
+/* The "make it re-runnable" antipattern. */
+DROP TABLE dbo.HandlerSource;
+GO
+
+TRUNCATE TABLE dbo.HandlerSource;
+GO
+
+ALTER TABLE dbo.HandlerSource
+    DROP COLUMN SrcUpdatedBy;
+GO
+
+DROP SCHEMA config;
+GO
+
+DROP DATABASE RCRAInfoScratch;
+GO
+
+DELETE FROM dbo.HandlerSource
+WHERE  ActivityLocation <> N'MD';
+GO
+
+DELETE TOP (1000) FROM logs.RetrievalError;
+GO
+
+/* Statement-position DELETE with no FROM. */
+DELETE dbo.HandlerSource
+WHERE  IsDeleted = 1;
+GO
+
+ALTER TABLE dbo.HandlerContact
+    ADD CONSTRAINT FK_dbo_HandlerContact_HandlerSource
+        FOREIGN KEY (HandlerSourceId) REFERENCES dbo.HandlerSource (HandlerSourceId)
+        ON DELETE CASCADE;
+GO

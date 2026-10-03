@@ -1,0 +1,16 @@
+-- A unique index that is not filtered on IsDeleted. Because there is no hard delete, the row for a
+-- retired key stays in the table forever, so the index permanently forbids the one operation the
+-- soft delete was supposed to allow: re-creating that key. The failure surfaces months later, as a
+-- duplicate-key error on a key the application can prove is not in use.
+--
+-- EXPECT: unique index must be filtered WHERE IsDeleted = 0
+
+SET XACT_ABORT ON;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes
+               WHERE name = N'UX_dbo_HandlerSource_HandlerId'
+                     AND object_id = OBJECT_ID (N'dbo.HandlerSource'))
+    CREATE UNIQUE NONCLUSTERED INDEX UX_dbo_HandlerSource_HandlerId
+        ON dbo.HandlerSource (HandlerId);
+GO

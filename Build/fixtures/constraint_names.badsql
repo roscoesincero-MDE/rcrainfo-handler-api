@@ -1,0 +1,30 @@
+-- Constraint names copied from another table. This is the single most likely way to author a new
+-- table: copy the template, change the column list, forget that default-constraint names are unique
+-- per DATABASE, not per table. The script then fails on a name collision with a table that is
+-- already deployed, in a script whose own guard says the object does not exist yet.
+--
+-- EXPECT: must be named 'DF_dbo_HandlerNote_<fieldName>'
+
+SET XACT_ABORT ON;
+GO
+
+IF OBJECT_ID (N'dbo.HandlerNote', N'U') IS NULL
+    CREATE TABLE dbo.HandlerNote
+    (
+        HandlerNoteId        INT             NOT NULL IDENTITY (1, 1),
+        HandlerId            NVARCHAR (12)   NOT NULL,
+        IsDeleted            BIT             NOT NULL CONSTRAINT DF_dbo_HandlerSource_IsDeleted            DEFAULT (0),
+        auditDeletedBy       NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_HandlerSource_auditDeletedBy       DEFAULT (ORIGINAL_LOGIN ()),
+        auditDeletedDateUtc  DATETIME2       NOT NULL CONSTRAINT DF_dbo_HandlerSource_auditDeletedDateUtc  DEFAULT (SYSUTCDATETIME ()),
+        auditCreatedBy       NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_HandlerSource_auditCreatedBy       DEFAULT (ORIGINAL_LOGIN ()),
+        auditCreatedDateUtc  DATETIME2       NOT NULL CONSTRAINT DF_dbo_HandlerSource_auditCreatedDateUtc  DEFAULT (SYSUTCDATETIME ()),
+        auditModifiedBy      NVARCHAR (128)  NOT NULL CONSTRAINT DF_dbo_HandlerSource_auditModifiedBy      DEFAULT (ORIGINAL_LOGIN ()),
+        auditModifiedDateUtc DATETIME2       NOT NULL CONSTRAINT DF_dbo_HandlerSource_auditModifiedDateUtc DEFAULT (SYSUTCDATETIME ())
+    );
+GO
+
+EXEC util.uspSetObjectDescription
+    @SchemaName = N'dbo',
+    @ObjectName = N'HandlerNote',
+    @Description = N'Fixture only.';
+GO
