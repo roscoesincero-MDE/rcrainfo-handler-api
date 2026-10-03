@@ -1,0 +1,137 @@
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @LoadRunId INT, @Rows INT, @Stamp DATETIME2, @Stamp2 DATETIME2, @Msg NVARCHAR (400);
+
+EXEC logs.uspStartLoadRun @RunMode = N'Reconcile', @AllowConcurrent = 1
+                        , @MachineName = N'da4_status_set.probesql'
+                        , @ApplicationVersion = N'probe'
+                        , @LoadRunId = @LoadRunId OUTPUT;
+PRINT CONCAT (N'Opened LoadRunId ', @LoadRunId);
+PRINT N'';
+
+PRINT N'=== A. Refusals ===';
+
+DECLARE @cases TABLE (Ordinal INT IDENTITY (1,1), Label NVARCHAR (100), Mode NVARCHAR (20), Elements NVARCHAR (MAX));
+INSERT INTO @cases (Label, Mode, Elements) VALUES
+  (N'bad mode',               N'Succeed',   N'[{"handlerId":"MD0000000001","activityLocation":"MD","sourceType":"N","sequence":1}]')
+, (N'not JSON',               N'Enumerate', N'not json')
+, (N'incomplete key',         N'Enumerate', N'[{"handlerId":"MD0000000001","activityLocation":"MD","sourceType":"N"}]')
+, (N'no activityLocation',    N'Enumerate', N'[{"handlerId":"MD0000000001","sourceType":"N","sequence":1}]')
+, (N'handlerId too wide',     N'Enumerate', N'[{"handlerId":"MD00000000012345","activityLocation":"MD","sourceType":"N","sequence":1}]')
+, (N'duplicate key in set',   N'Enumerate', N'[{"handlerId":"MD0000000001","activityLocation":"MD","sourceType":"N","sequence":1},{"handlerId":"MD0000000001","activityLocation":"MD","sourceType":"N","sequence":1}]')
+, (N'Attempt without number', N'Attempt',   N'[{"handlerId":"MD0000000001","sourceType":"N","sequence":1}]')
+, (N'Fail with no detail',    N'Fail',      N'[{"handlerId":"MD0000000001","sourceType":"N","sequence":1}]')
+, (N'httpStatusCode 0',       N'Fail',      N'[{"handlerId":"MD0000000001","sourceType":"N","sequence":1,"httpStatusCode":0}]');
+
+DECLARE @i INT = 1, @n INT = (SELECT COUNT (*) FROM @cases), @lbl NVARCHAR (100), @m NVARCHAR (20), @el NVARCHAR (MAX);
+WHILE @i <= @n
+BEGIN
+    SELECT @lbl = Label, @m = Mode, @el = Elements FROM @cases WHERE Ordinal = @i;
+    BEGIN TRY
+        EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = @m, @Elements = @el;
+        PRINT CONCAT (N'  FAIL  ', @lbl, N' was accepted.');
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT (N'  ok    ', @lbl, N' -> ', LEFT (ERROR_MESSAGE (), 88));
+    END CATCH;
+    SET @i += 1;
+END;
+
+PRINT N'';
+PRINT N'=== B. Enumerate, then re-Enumerate must change nothing ===';
+DECLARE @Work NVARCHAR (MAX) = N'[{"handlerId":"MD0000000001","activityLocation":"MD","sourceType":"N","sequence":1}
+                                 ,{"handlerId":"MD0000000002","activityLocation":"MD","sourceType":"N","sequence":1}
+                                 ,{"handlerId":"MD0000000003","activityLocation":"MD","sourceType":"N","sequence":1}]';
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Enumerate'
+                                      , @Elements = @Work, @RowsAffected = @Rows OUTPUT;
+PRINT CONCAT (N'  first Enumerate  rowsAffected = ', @Rows, CASE WHEN @Rows = 3 THEN N'  ok' ELSE N'  FAIL' END);
+
+SELECT @Stamp = MAX (auditModifiedDateUtc) FROM logs.HandlerLoadStatus WHERE LoadRunId = @LoadRunId;
+WAITFOR DELAY '00:00:00.050';
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Enumerate'
+                                      , @Elements = @Work, @RowsAffected = @Rows OUTPUT;
+SELECT @Stamp2 = MAX (auditModifiedDateUtc) FROM logs.HandlerLoadStatus WHERE LoadRunId = @LoadRunId;
+PRINT CONCAT (N'  second Enumerate rowsAffected = ', @Rows
+            , N', auditModifiedDateUtc moved = ', CASE WHEN @Stamp2 > @Stamp THEN N'YES' ELSE N'no' END
+            , CASE WHEN @Rows = 0 AND @Stamp2 = @Stamp THEN N'  ok  (converged)' ELSE N'  FAIL' END);
+
+PRINT N'';
+PRINT N'=== C. Attempt is idempotent (AttemptCount is SET, not incremented) ===';
+DECLARE @A NVARCHAR (MAX) = N'[{"handlerId":"MD0000000001","sourceType":"N","sequence":1,"attemptNumber":2}]';
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Attempt', @Elements = @A;
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Attempt', @Elements = @A;
+SELECT @Rows = AttemptCount FROM logs.HandlerLoadStatus
+ WHERE LoadRunId = @LoadRunId AND HandlerId = N'MD0000000001';
+PRINT CONCAT (N'  AttemptCount after two identical Attempt calls = ', @Rows
+            , CASE WHEN @Rows = 2 THEN N'  ok  (a retry cannot inflate it)' ELSE N'  FAIL' END);
+
+PRINT N'';
+PRINT N'=== D. Fail records detail and a duration ===';
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Fail'
+   , @Elements = N'[{"handlerId":"MD0000000001","sourceType":"N","sequence":1,"httpStatusCode":503
+                    ,"apiErrorCode":"E_SERVICE_UNAVAILABLE","apiErrorMessage":"Service temporarily unavailable"
+                    ,"apiErrorId":"abc-123","apiErrorDate":"2026-09-05T11:02:31"}]';
+
+PRINT N'=== E. Skip ===';
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Skip'
+   , @Elements = N'[{"handlerId":"MD0000000003","sourceType":"N","sequence":1}]';
+
+PRINT N'';
+PRINT N'=== F. A Succeeded row is excluded and the exclusion is reported ===';
+-- Developer-only: stands in for dbo.uspMergeHandlerSourceBatch, the only thing that may legitimately
+-- write Succeeded. The loader login cannot do this.
+UPDATE logs.HandlerLoadStatus
+   SET Status = N'Succeeded', Outcome = N'Inserted'
+ WHERE LoadRunId = @LoadRunId AND HandlerId = N'MD0000000002';
+
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Fail'
+   , @Elements = N'[{"handlerId":"MD0000000002","sourceType":"N","sequence":1,"httpStatusCode":500}]'
+   , @RowsAffected = @Rows OUTPUT;
+PRINT CONCAT (N'  rowsAffected against a Succeeded row = ', @Rows
+            , CASE WHEN @Rows = 0 THEN N'  ok  (not overwritten)' ELSE N'  FAIL' END);
+SELECT @Msg = Comments FROM logs.ExecutionLog
+ WHERE ExecutionLogId = (SELECT MAX (ExecutionLogId) FROM logs.ExecutionLog
+                          WHERE ProcedureName = N'[logs].[uspUpsertHandlerLoadStatusSet]');
+PRINT CONCAT (N'  Comments: ', @Msg);
+
+PRINT N'';
+PRINT N'=== G. Revive: a soft-deleted row re-enumerated goes back to Pending ===';
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1
+ WHERE LoadRunId = @LoadRunId AND HandlerId = N'MD0000000003';
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Enumerate'
+                                      , @Elements = @Work, @RowsAffected = @Rows OUTPUT;
+SELECT @Msg = CONCAT (N'IsDeleted=', IsDeleted, N', Status=', Status, N', AttemptCount=', AttemptCount
+                    , N', CompletedDateUtc=', COALESCE (CONVERT (NVARCHAR (30), CompletedDateUtc), N'NULL'))
+  FROM logs.HandlerLoadStatus WHERE LoadRunId = @LoadRunId AND HandlerId = N'MD0000000003';
+PRINT CONCAT (N'  ', @Msg, N'  (rowsAffected = ', @Rows, N')');
+
+PRINT N'';
+PRINT N'=== H. Empty array is a no-op, not an error ===';
+EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Enumerate'
+                                      , @Elements = N'[]', @RowsAffected = @Rows OUTPUT;
+PRINT CONCAT (N'  rowsAffected = ', @Rows, CASE WHEN @Rows = 0 THEN N'  ok' ELSE N'  FAIL' END);
+
+PRINT N'';
+PRINT N'=== I. A closed run refuses further work ===';
+EXEC logs.uspCompleteLoadRun @LoadRunId = @LoadRunId, @Status = N'Succeeded';
+BEGIN TRY
+    EXEC logs.uspUpsertHandlerLoadStatusSet @LoadRunId = @LoadRunId, @Mode = N'Skip', @Elements = @Work;
+    PRINT N'  FAIL: a closed run accepted work.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  ok    -> ', LEFT (ERROR_MESSAGE (), 108));
+END CATCH;
+
+PRINT N'';
+PRINT N'=== Final state ===';
+SELECT HandlerId, Status, Outcome, AttemptCount, HttpStatusCode, ApiErrorCode, DurationMs, IsDeleted
+  FROM logs.HandlerLoadStatus
+ WHERE LoadRunId = @LoadRunId
+ ORDER BY HandlerId;
+
+PRINT N'=== Cleanup: the probe run and its rows are soft-deleted, never removed ===';
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @LoadRunId;
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @LoadRunId;

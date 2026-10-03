@@ -1,0 +1,14 @@
+-- Does the AR8 TRY/CATCH wrapping break the result-set shape EF Core has to materialize? This is the
+-- question DA1 assigned to the read procedure. sys.dm_exec_describe_first_result_set is the same
+-- metadata path a client uses, so a procedure it cannot describe is one EF Core cannot map.
+SET NOCOUNT ON;
+
+SELECT column_ordinal, name, system_type_name, is_nullable, error_message
+  FROM sys.dm_exec_describe_first_result_set (N'EXEC logs.uspGetLoadRunPage', NULL, 0)
+ ORDER BY column_ordinal;
+
+PRINT N'--- and the write procedure ---';
+SELECT column_ordinal, name, system_type_name, is_nullable, error_message
+  FROM sys.dm_exec_describe_first_result_set
+       (N'EXEC dbo.uspMergeHandlerSourceBatch @Payload = N''[]''', NULL, 0)
+ ORDER BY column_ordinal;

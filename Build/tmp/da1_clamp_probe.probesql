@@ -1,0 +1,28 @@
+-- The clamp is only provable from the log now that @Comments carries the EFFECTIVE Skip and Take.
+-- @KeyParameters records what the caller asked for; the pair together is the proof.
+SET NOCOUNT ON;
+CREATE TABLE #P (LoadRunId INT, RunMode NVARCHAR (20), ActivityLocation NVARCHAR (2),
+    RequestedFromDate DATE, RequestedToDate DATE, WatermarkBeforeDate DATE, WatermarkAfterDate DATE,
+    OverlapDaysApplied INT, Status NVARCHAR (20), StartedDateUtc DATETIME2, CompletedDateUtc DATETIME2,
+    ElapsedSeconds INT, ResumedFromLoadRunId INT, LookupListsRefreshed INT,
+    SourceRecordsEnumerated INT, SourceRecordsFetched INT, SourceRecordsInserted INT,
+    SourceRecordsUpdated INT, SourceRecordsUnchanged INT, SourceRecordsSoftDeleted INT,
+    SourceRecordsSkipped INT, SourceRecordsFailed INT, HttpRequestCount INT, HttpRetryCount INT,
+    FailureMessage NVARCHAR (4000), InvokedBy NVARCHAR (128), MachineName NVARCHAR (128),
+    ProcessId INT, ApplicationVersion NVARCHAR (50), IsDeleted BIT, auditModifiedDateUtc DATETIME2,
+    TotalRows INT);
+
+DECLARE @From BIGINT = (SELECT COALESCE (MAX (ExecutionLogId), 0) FROM logs.ExecutionLog);
+
+INSERT INTO #P EXEC logs.uspGetLoadRunPage @Take = 100000;
+INSERT INTO #P EXEC logs.uspGetLoadRunPage @Take = 0;
+INSERT INTO #P EXEC logs.uspGetLoadRunPage @Take = NULL, @Skip = NULL;
+INSERT INTO #P EXEC logs.uspGetLoadRunPage @Skip = -50, @Take = 3;
+INSERT INTO #P EXEC logs.uspGetLoadRunPage @Skip = 2147483647, @Take = 7;
+
+SELECT LEFT (KeyParameters, 26) AS AskedFor, LEFT (Comments, 52) AS Effective
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunPage]' AND ExecutionLogId > @From
+ ORDER BY ExecutionLogId;
+
+DROP TABLE #P;

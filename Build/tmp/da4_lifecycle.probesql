@@ -1,0 +1,233 @@
+/* Behavioural probe for the four DA4 lifecycle procedures. Run as the developer against the dev
+   database. Not a deployment script and not committed as one: .probesql keeps it away from both the
+   deployment glob and the SQL validator.
+
+   It leaves the watermark as it found it, by ending with the clear path -- which is itself one of the
+   branches under test. */
+
+SET NOCOUNT ON;
+
+DECLARE @RunId INT, @SecondRunId INT, @StaleRunId INT
+      , @Before DATETIME2, @After DATETIME2
+      , @Advanced DATE = DATEADD (DAY, -2, CAST (SYSUTCDATETIME () AS DATE));
+
+PRINT N'=== 512: the read, on the seeded (never loaded) state ===';
+EXEC config.uspGetLoadWatermark;
+
+SELECT RecommendedRunMode  = CASE WHEN WatermarkDate IS NULL THEN N'Full' ELSE N'Incremental' END
+     , WatermarkDate, OverlapDays, IsEnabled
+  FROM config.LoadWatermark
+ WHERE FeedName = N'HandlerSource' AND ActivityLocation = N'MD' AND IsDeleted = 0;
+
+PRINT N'';
+PRINT N'=== 512: a feed that does not exist must throw, not return zero rows ===';
+BEGIN TRY
+    EXEC config.uspGetLoadWatermark @FeedName = N'NoSuchFeed';
+    PRINT N'  FAIL  an unknown feed returned without error.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  ok    refused (', ERROR_NUMBER (), N'): ', LEFT (ERROR_MESSAGE (), 80));
+END CATCH;
+
+PRINT N'';
+PRINT N'=== 513: the refusals ===';
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @WatermarkDate = '2099-01-01', @Notes = N'probe';
+    PRINT N'  FAIL  a FUTURE watermark was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    future date: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @ClearWatermark = 1, @WatermarkDate = '2026-09-01', @Notes = N'probe';
+    PRINT N'  FAIL  clear + a date was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    clear+date: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @ClearWatermark = 1;
+    PRINT N'  FAIL  clear with no reason was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    clear w/o notes: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @AllowRewind = 1, @WatermarkDate = '2026-09-01';
+    PRINT N'  FAIL  rewind with no reason was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    rewind w/o notes: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @OverlapDays = 400, @Notes = N'probe';
+    PRINT N'  FAIL  OverlapDays = 400 was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    OverlapDays: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @FeedName = N'NoSuchFeed', @WatermarkDate = '2026-09-01', @Notes = N'probe';
+    PRINT N'  FAIL  an unknown feed was upserted rather than refused.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    unknown feed: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @WatermarkDate = '2026-09-01', @LoadRunId = 2000000000;
+    PRINT N'  FAIL  a nonexistent run was accepted as the mover.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    unknown run: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @WatermarkDate = '2026-09-01';
+    PRINT N'  FAIL  an UNATTRIBUTED date change was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    unattributed: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+PRINT N'';
+PRINT N'=== 510/511: open a run, then the things a caller must not be allowed to do ===';
+
+EXEC logs.uspStartLoadRun @RunMode = N'Full', @AllowConcurrent = 1
+   , @MachineName = N'da4-probe', @LoadRunId = @RunId OUTPUT;
+PRINT CONCAT (N'  opened LoadRunId = ', @RunId);
+
+BEGIN TRY
+    EXEC logs.uspStartLoadRun @RunMode = N'Sideways', @AllowConcurrent = 1;
+    PRINT N'  FAIL  an invalid @RunMode was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    bad RunMode: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC logs.uspStartLoadRun @RunMode = N'Incremental', @AllowConcurrent = 1
+       , @RequestedFromDate = '2026-09-03', @RequestedToDate = '2026-09-01';
+    PRINT N'  FAIL  an inverted date window was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    date order: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+PRINT N'  -- the concurrency refusal, with a run genuinely in flight:';
+BEGIN TRY
+    EXEC logs.uspStartLoadRun @RunMode = N'Full', @LoadRunId = @SecondRunId OUTPUT;
+    PRINT CONCAT (N'  FAIL  a second concurrent run opened as ', @SecondRunId);
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    concurrent: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC logs.uspCompleteLoadRun @LoadRunId = @RunId, @Status = N'Failed';
+    PRINT N'  FAIL  ''Failed'' with no message was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    Failed w/o msg: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC logs.uspCompleteLoadRun @LoadRunId = @RunId, @Status = N'Running';
+    PRINT N'  FAIL  closing a run as ''Running'' was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    Status Running: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+BEGIN TRY
+    EXEC logs.uspCompleteLoadRun @LoadRunId = @RunId, @Status = N'Succeeded', @SourceRecordsFailed = 3;
+    PRINT N'  FAIL  ''Succeeded'' with 3 failures was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    Succeeded+fails: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+PRINT N'';
+PRINT N'=== 513: a ''Running'' run may advance the watermark, and both tables move together ===';
+EXEC config.uspSetLoadWatermark @WatermarkDate = @Advanced, @LoadRunId = @RunId;
+
+SELECT probe = N'after the advance'
+     , w.WatermarkDate, w.LastAdvancedByLoadRunId, LastAdvanced = w.LastAdvancedDateUtc
+     , RunStamped = r.WatermarkAfterDate
+  FROM config.LoadWatermark AS w
+  CROSS JOIN logs.LoadRun AS r
+ WHERE w.FeedName = N'HandlerSource' AND w.ActivityLocation = N'MD' AND w.IsDeleted = 0
+   AND r.LoadRunId = @RunId;
+
+PRINT N'  -- the same call again must change NOTHING (convergence):';
+SELECT @Before = auditModifiedDateUtc FROM config.LoadWatermark
+ WHERE FeedName = N'HandlerSource' AND ActivityLocation = N'MD' AND IsDeleted = 0;
+EXEC config.uspSetLoadWatermark @WatermarkDate = @Advanced, @LoadRunId = @RunId;
+SELECT @After = auditModifiedDateUtc FROM config.LoadWatermark
+ WHERE FeedName = N'HandlerSource' AND ActivityLocation = N'MD' AND IsDeleted = 0;
+PRINT CASE WHEN @Before = @After
+           THEN N'  ok    auditModifiedDateUtc did not move.'
+           ELSE N'  FAIL  auditModifiedDateUtc moved on a no-op call.' END;
+
+PRINT N'  -- a backwards move without @AllowRewind:';
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @WatermarkDate = '2026-01-01', @LoadRunId = @RunId;
+    PRINT N'  FAIL  an unflagged rewind was accepted.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    rewind: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+PRINT N'  -- OverlapDays alone must NOT touch LastAdvanced*:';
+SELECT @Before = LastAdvancedDateUtc FROM config.LoadWatermark
+ WHERE FeedName = N'HandlerSource' AND ActivityLocation = N'MD' AND IsDeleted = 0;
+EXEC config.uspSetLoadWatermark @OverlapDays = 2, @Notes = N'Probe: widened, date untouched.';
+SELECT @After = LastAdvancedDateUtc FROM config.LoadWatermark
+ WHERE FeedName = N'HandlerSource' AND ActivityLocation = N'MD' AND IsDeleted = 0;
+PRINT CASE WHEN @Before = @After
+           THEN N'  ok    LastAdvancedDateUtc held while OverlapDays changed.'
+           ELSE N'  FAIL  a config-only change moved LastAdvancedDateUtc.' END;
+
+PRINT N'';
+PRINT N'=== 511: close it, then close it again ===';
+EXEC logs.uspCompleteLoadRun @LoadRunId = @RunId, @Status = N'Succeeded'
+   , @SourceRecordsEnumerated = 10, @SourceRecordsInserted = 10, @HttpRequestCount = 4;
+PRINT N'  -- the same close again must be a recorded no-op, not an error:';
+EXEC logs.uspCompleteLoadRun @LoadRunId = @RunId, @Status = N'Succeeded';
+PRINT N'  ok    the repeated close returned without error.';
+
+PRINT N'  -- a DIFFERENT status for the same closed run is two accounts of one run:';
+BEGIN TRY
+    EXEC logs.uspCompleteLoadRun @LoadRunId = @RunId, @Status = N'Failed', @FailureMessage = N'probe';
+    PRINT N'  FAIL  a closed run was re-closed with a different status.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    status conflict: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+PRINT N'  -- a run that did not succeed must not be able to move the watermark:';
+EXEC logs.uspStartLoadRun @RunMode = N'Full', @AllowConcurrent = 1
+   , @MachineName = N'da4-probe', @LoadRunId = @SecondRunId OUTPUT;
+EXEC logs.uspCompleteLoadRun @LoadRunId = @SecondRunId, @Status = N'Failed'
+   , @FailureMessage = N'Probe: deliberately failed to test the watermark refusal.';
+BEGIN TRY
+    EXEC config.uspSetLoadWatermark @WatermarkDate = @Advanced, @LoadRunId = @SecondRunId;
+    PRINT N'  FAIL  a ''Failed'' run advanced the watermark.';
+END TRY
+BEGIN CATCH PRINT CONCAT (N'  ok    failed run: ', LEFT (ERROR_MESSAGE (), 70)); END CATCH;
+
+PRINT N'';
+PRINT N'=== 510: the abandonment sweep, on a run backdated 20 hours ===';
+EXEC logs.uspStartLoadRun @RunMode = N'Full', @AllowConcurrent = 1
+   , @MachineName = N'da4-probe-stale', @LoadRunId = @StaleRunId OUTPUT;
+
+/* Backdating is the one thing the probe does that no procedure offers, and the only way to reach the
+   sweep without waiting 12 hours. Developer-only, dev database only. */
+UPDATE logs.LoadRun
+   SET StartedDateUtc = DATEADD (HOUR, -20, SYSUTCDATETIME ())
+ WHERE LoadRunId = @StaleRunId;
+
+EXEC logs.uspStartLoadRun @RunMode = N'Full', @LoadRunId = @SecondRunId OUTPUT;
+PRINT CONCAT (N'  the sweep let a new run open as ', @SecondRunId);
+
+SELECT probe = N'the stale run', LoadRunId, Status, CompletedDateUtc
+     , Failure = LEFT (FailureMessage, 100)
+  FROM logs.LoadRun WHERE LoadRunId = @StaleRunId;
+
+EXEC logs.uspCompleteLoadRun @LoadRunId = @SecondRunId, @Status = N'Succeeded';
+
+PRINT N'';
+PRINT N'=== restore: clear the watermark, which is also the clear path under test ===';
+EXEC config.uspSetLoadWatermark @ClearWatermark = 1, @OverlapDays = 1
+   , @Notes = N'Probe cleanup: back to the seeded never-loaded state.';
+
+SELECT probe = N'restored', WatermarkDate, OverlapDays, IsEnabled
+     , LastAdvancedByLoadRunId, Notes = LEFT (Notes, 60)
+  FROM config.LoadWatermark
+ WHERE FeedName = N'HandlerSource' AND ActivityLocation = N'MD' AND IsDeleted = 0;
+
+PRINT N'';
+PRINT N'=== the instrumentation these calls left behind ===';
+SELECT ProcedureName, Calls = COUNT (*)
+     , Failures = SUM (CASE WHEN Successful = 0 THEN 1 ELSE 0 END)
+     , Unfinished = SUM (CASE WHEN EndDateUtc IS NULL THEN 1 ELSE 0 END)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName IN (N'[logs].[uspStartLoadRun]', N'[logs].[uspCompleteLoadRun]'
+                       , N'[config].[uspSetLoadWatermark]', N'[config].[uspGetLoadWatermark]')
+ GROUP BY ProcedureName
+ ORDER BY ProcedureName;
+GO

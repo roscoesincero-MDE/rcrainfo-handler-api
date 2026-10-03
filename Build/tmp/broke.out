@@ -1,0 +1,160 @@
+Build started 9/5/2026 6:59:37 PM.
+     1>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" on node 1 (Restore target(s)).
+     1>_GetAllRestoreProjectPathItems:
+         Determining projects to restore...
+     1>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1) is building "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (2:4) on node 1 (_GenerateProjectRestoreGraph target(s)).
+     2>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.7
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.7\data\PackageOverrides.txt
+     2>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (_GenerateProjectRestoreGraph target(s)).
+     1>Restore:
+         X.509 certificate chain validation will use the default trust store selected by .NET for code signing.
+         X.509 certificate chain validation will use the default trust store selected by .NET for timestamping.
+         Assets file has not changed. Skipping assets file writing. Path: C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\obj\project.assets.json
+         Assets file has not changed. Skipping assets file writing. Path: C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\obj\project.assets.json
+         Restored C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj (in 49 ms).
+         Restored C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\RCRAInfo.Core.csproj (in 48 ms).
+         Assets file has not changed. Skipping assets file writing. Path: C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\obj\project.assets.json
+         Restored C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj (in 49 ms).
+         
+         NuGet Config files used:
+             C:\Users\rsincero\AppData\Roaming\NuGet\NuGet.Config
+             C:\Program Files (x86)\NuGet\Config\Microsoft.VisualStudio.FallbackLocation.config
+             C:\Program Files (x86)\NuGet\Config\Microsoft.VisualStudio.Offline.config
+         
+         Feeds used:
+             https://api.nuget.org/v3/index.json
+             C:\Program Files (x86)\Microsoft SDKs\NuGetPackages\
+         All projects are up-to-date for restore.
+     1>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (Restore target(s)).
+   1:7>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" on node 1 (VSTest target(s)).
+     1>BuildProject:
+         Build started, please wait...
+   1:7>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:7) is building "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:8) on node 1 (default targets).
+   1:8>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:8) is building "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\RCRAInfo.Core.csproj" (3:6) on node 2 (default targets).
+     3>GenerateTargetFrameworkMonikerAttribute:
+       Skipping target "GenerateTargetFrameworkMonikerAttribute" because all output files are up-to-date with respect to the input files.
+       CoreGenerateAssemblyInfo:
+       Skipping target "CoreGenerateAssemblyInfo" because all output files are up-to-date with respect to the input files.
+       _GenerateSourceLinkFile:
+         Source Link is empty, file 'obj\Debug\net10.0\RCRAInfo.Core.sourcelink.json' does not exist.
+       CoreCompile:
+       Skipping target "CoreCompile" because all output files are up-to-date with respect to the input files.
+       GenerateBuildDependencyFile:
+       Skipping target "GenerateBuildDependencyFile" because all output files are up-to-date with respect to the input files.
+       CopyFilesToOutputDirectory:
+         RCRAInfo.Core -> C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\bin\Debug\net10.0\RCRAInfo.Core.dll
+     3>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Core\RCRAInfo.Core.csproj" (default targets).
+   1:8>Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (1:8) is building "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (2:6) on node 1 (default targets).
+     2>GenerateTargetFrameworkMonikerAttribute:
+       Skipping target "GenerateTargetFrameworkMonikerAttribute" because all output files are up-to-date with respect to the input files.
+       CoreGenerateAssemblyInfo:
+       Skipping target "CoreGenerateAssemblyInfo" because all output files are up-to-date with respect to the input files.
+       _GenerateSourceLinkFile:
+         Source Link is empty, file 'obj\Debug\net10.0\RCRAInfo.Data.sourcelink.json' does not exist.
+       CoreCompile:
+       Skipping target "CoreCompile" because all output files are up-to-date with respect to the input files.
+       GenerateBuildDependencyFile:
+       Skipping target "GenerateBuildDependencyFile" because all output files are up-to-date with respect to the input files.
+       CopyFilesToOutputDirectory:
+         RCRAInfo.Data -> C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\bin\Debug\net10.0\RCRAInfo.Data.dll
+     2>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\src\RCRAInfo.Data\RCRAInfo.Data.csproj" (default targets).
+     1>GenerateTargetFrameworkMonikerAttribute:
+       Skipping target "GenerateTargetFrameworkMonikerAttribute" because all output files are up-to-date with respect to the input files.
+       CoreGenerateAssemblyInfo:
+       Skipping target "CoreGenerateAssemblyInfo" because all output files are up-to-date with respect to the input files.
+       _GenerateSourceLinkFile:
+         Source Link is empty, file 'obj\Debug\net10.0\RCRAInfo.Data.Integration.Tests.sourcelink.json' does not exist.
+       CoreCompile:
+       Skipping target "CoreCompile" because all output files are up-to-date with respect to the input files.
+       _CopyOutOfDateSourceItemsToOutputDirectory:
+       Skipping target "_CopyOutOfDateSourceItemsToOutputDirectory" because all output files are up-to-date with respect to the input files.
+       GenerateBuildDependencyFile:
+       Skipping target "GenerateBuildDependencyFile" because all output files are up-to-date with respect to the input files.
+       GenerateBuildRuntimeConfigurationFiles:
+       Skipping target "GenerateBuildRuntimeConfigurationFiles" because all output files are up-to-date with respect to the input files.
+       CopyFilesToOutputDirectory:
+         RCRAInfo.Data.Integration.Tests -> C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\bin\Debug\net10.0\RCRAInfo.Data.Integration.Tests.dll
+     1>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (default targets).
+     1>BuildProject:
+         Build completed.
+         
+Test run for C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\bin\Debug\net10.0\RCRAInfo.Data.Integration.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v3.1.4+50e68bbb8b (64-bit .NET 10.0.11)
+[xUnit.net 00:00:00.06]   Discovering: RCRAInfo.Data.Integration.Tests
+[xUnit.net 00:00:00.13]   Discovered:  RCRAInfo.Data.Integration.Tests
+[xUnit.net 00:00:00.14]   Starting:    RCRAInfo.Data.Integration.Tests
+[xUnit.net 00:00:00.34]     RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheDatabaseHasNoUserDefinedTableType [FAIL]
+[xUnit.net 00:00:00.34]       Assert.Equal() Failure: Values differ
+[xUnit.net 00:00:00.34]       Expected: 0
+[xUnit.net 00:00:00.34]       Actual:   1
+[xUnit.net 00:00:00.34]       Stack Trace:
+[xUnit.net 00:00:00.34]         C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs(586,0): at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheDatabaseHasNoUserDefinedTableType()
+[xUnit.net 00:00:00.34]         C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs(586,0): at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheDatabaseHasNoUserDefinedTableType()
+[xUnit.net 00:00:00.34]         --- End of stack trace from previous location ---
+[xUnit.net 00:00:00.37]     RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryInstrumentedProcedureIsCovered [FAIL]
+[xUnit.net 00:00:00.37]       Assert.Equal() Failure: Collections differ
+[xUnit.net 00:00:00.37]                                                                                          ↓ (pos 10)
+[xUnit.net 00:00:00.37]       Expected: [···, "dbo.uspSearchHandlerSource", "dbo.uspSoftDeleteHandlerSourceSet", "logs.uspCompleteLoadRun", "logs.uspGetHandlerLoadStatusPage", "logs.uspGetLoadRunPage", ···]
+[xUnit.net 00:00:00.37]       Actual:   [···, "dbo.uspSearchHandlerSource", "dbo.uspSoftDeleteHandlerSourceSet", "dbo.uspZZSwallowProbe", "logs.uspCompleteLoadRun", "logs.uspGetHandlerLoadStatusPage", ···]
+[xUnit.net 00:00:00.37]                                                                                          ↑ (pos 10)
+[xUnit.net 00:00:00.37]       Stack Trace:
+[xUnit.net 00:00:00.37]         C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs(555,0): at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryInstrumentedProcedureIsCovered()
+[xUnit.net 00:00:00.37]         C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs(555,0): at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryInstrumentedProcedureIsCovered()
+[xUnit.net 00:00:00.37]         --- End of stack trace from previous location ---
+[xUnit.net 00:00:00.37]     RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoProcedureCatchSwallowsItsError [FAIL]
+[xUnit.net 00:00:00.37]       Assert.Equal() Failure: Values differ
+[xUnit.net 00:00:00.37]       Expected: 16
+[xUnit.net 00:00:00.37]       Actual:   17
+[xUnit.net 00:00:00.37]       Stack Trace:
+[xUnit.net 00:00:00.37]         C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs(496,0): at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoProcedureCatchSwallowsItsError()
+[xUnit.net 00:00:00.37]         C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs(518,0): at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoProcedureCatchSwallowsItsError()
+[xUnit.net 00:00:00.37]         --- End of stack trace from previous location ---
+[xUnit.net 00:00:00.38]   Finished:    RCRAInfo.Data.Integration.Tests
+  Failed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheDatabaseHasNoUserDefinedTableType [164 ms]
+  Error Message:
+   Assert.Equal() Failure: Values differ
+Expected: 0
+Actual:   1
+  Stack Trace:
+     at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheDatabaseHasNoUserDefinedTableType() in C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs:line 586
+   at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.TheDatabaseHasNoUserDefinedTableType() in C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs:line 586
+--- End of stack trace from previous location ---
+  Failed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryInstrumentedProcedureIsCovered [25 ms]
+  Error Message:
+   Assert.Equal() Failure: Collections differ
+                                                                                   ↓ (pos 10)
+Expected: [···, "dbo.uspSearchHandlerSource", "dbo.uspSoftDeleteHandlerSourceSet", "logs.uspCompleteLoadRun", "logs.uspGetHandlerLoadStatusPage", "logs.uspGetLoadRunPage", ···]
+Actual:   [···, "dbo.uspSearchHandlerSource", "dbo.uspSoftDeleteHandlerSourceSet", "dbo.uspZZSwallowProbe", "logs.uspCompleteLoadRun", "logs.uspGetHandlerLoadStatusPage", ···]
+                                                                                   ↑ (pos 10)
+  Stack Trace:
+     at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryInstrumentedProcedureIsCovered() in C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs:line 555
+   at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.EveryInstrumentedProcedureIsCovered() in C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs:line 555
+--- End of stack trace from previous location ---
+  Failed RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoProcedureCatchSwallowsItsError [5 ms]
+  Error Message:
+   Assert.Equal() Failure: Values differ
+Expected: 16
+Actual:   17
+  Stack Trace:
+     at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoProcedureCatchSwallowsItsError() in C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs:line 496
+   at RCRAInfo.Data.Integration.Tests.ExecutionLogTests.NoProcedureCatchSwallowsItsError() in C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\ExecutionLogTests.cs:line 518
+--- End of stack trace from previous location ---
+
+Test Run Failed.
+Total tests: 3
+     Failed: 3
+ Total time: 0.9415 Seconds
+       _VSTestConsole:
+         MSB4181: The "VSTestTask" task returned false but did not log an error.
+     1>Done Building Project "C:\~MDE-55TT2J4\RCRAInfo\tests\RCRAInfo.Data.Integration.Tests\RCRAInfo.Data.Integration.Tests.csproj" (VSTest target(s)) -- FAILED.
+
+Build FAILED.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:03.17

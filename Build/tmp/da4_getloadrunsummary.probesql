@@ -1,0 +1,676 @@
+-- Probe for logs.uspGetLoadRunSummary (script 502).
+--
+-- Every handler used here is a MDPROBE* id that cannot collide with EPA data, and every row this
+-- script creates is SOFT-deleted at the end. Nothing is dropped and nothing is removed.
+--
+-- The result set is captured into a #temp whose 71 columns are written out in full, so the shape of the
+-- projection is asserted rather than assumed: add, remove or reorder a column in the procedure and
+-- INSERT ... EXEC fails outright. There is no RowOrder column here and there does not need to be --
+-- this procedure returns at most one row, which is the whole of its difference from the paged reads.
+--
+-- REFUSALS ARE CALLED WITH A PLAIN EXEC AND SUCCESSES WITH INSERT ... EXEC, and the split is not
+-- cosmetic. INSERT ... EXEC runs inside a transaction, SET XACT_ABORT ON dooms that transaction the
+-- moment the procedure throws, and no log row can be written from a doomed transaction -- error 3930.
+-- Capturing the rows of a call that returns none would therefore mean asserting the recording under the
+-- one condition that makes recording impossible. Section A2 goes on to assert that 3930 boundary
+-- deliberately.
+--
+-- SECTION G IS THE ONE PLACE THIS PROBE OPENS A TRANSACTION, and it opens one because the empty-answer
+-- path cannot be reached any other way: it requires a database with no visible load run, and this one
+-- has years of them. So it soft-deletes every run inside a transaction it OWNS, asserts the empty
+-- result set, and rolls the whole thing back. No row is removed at any point, and the rollback restores
+-- IsDeleted and auditModifiedDateUtc on every run it touched.
+--
+-- Run it with sqlcmd -I. QUOTED_IDENTIFIER must be ON for any write to a table carrying a filtered
+-- index, which logs.HandlerLoadStatus does (UX_logs_HandlerLoadStatus_Natural), and sqlcmd defaults it
+-- OFF: without -I the fixture INSERT fails with error 1934 and nothing below it runs.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @R1 INT, @R2 INT, @R3 INT, @R4 INT, @n INT, @m INT, @Stamp DATETIME2
+      , @Actual NVARCHAR (400), @Before INT, @After INT
+      , @Machine NVARCHAR (128) = N'da4_getloadrunsummary.probesql';
+
+SET @Stamp = SYSUTCDATETIME ();
+
+----------------------------------------------------------------------------------------------------
+-- Reset. A previous run of this probe leaves its four runs and their children behind, and section F
+-- asserts WHICH run is the most recent -- so a leftover run from last time would change the answer.
+-- Soft-deleted, never removed, which is also the behaviour the read under test has to respect.
+--
+-- The runs are retired first and their children found through them, because logs.HandlerLoadAttempt and
+-- logs.DataQualityObservation carry no HandlerId of their own to match on.
+----------------------------------------------------------------------------------------------------
+UPDATE logs.HandlerLoadAttempt SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE IsDeleted = 0
+   AND LoadRunId IN (SELECT LoadRunId FROM logs.LoadRun WHERE MachineName = @Machine);
+
+UPDATE logs.DataQualityObservation SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE IsDeleted = 0
+   AND LoadRunId IN (SELECT LoadRunId FROM logs.LoadRun WHERE MachineName = @Machine);
+
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE HandlerId LIKE N'MDPROBE0003%' AND IsDeleted = 0;
+
+-- Any run this probe left Running -- an interrupted previous run -- is closed out before it is retired,
+-- so the fixture below is the only Running run in the database and section C can assert on it.
+UPDATE logs.LoadRun
+   SET Status = N'Abandoned', CompletedDateUtc = SYSUTCDATETIME ()
+     , auditModifiedBy = ORIGINAL_LOGIN (), auditModifiedDateUtc = SYSUTCDATETIME ()
+ WHERE MachineName = @Machine AND Status = N'Running';
+
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE MachineName = @Machine AND IsDeleted = 0;
+
+----------------------------------------------------------------------------------------------------
+-- Fixture: four runs, chosen so that each one answers a different question.
+--
+--   R1  PartiallySucceeded, counters written to AGREE with its status rows -> CounterDriftDetected = 0
+--       ... but with Enumerated, Fetched and HttpRequestCount deliberately
+--           disagreeing, because those three are excluded from the comparison on purpose
+--   R2  Failed, counters written to DISAGREE                               -> CounterDriftDetected = 1
+--   R3  left Running                                                      -> CounterDriftDetected NULL
+--   R4  Succeeded, then soft-deleted                                      -> refused unless asked for
+--
+-- R4 is created LAST and retired, so "the most recent VISIBLE run" is R3 and "the most recent run at
+-- all" is R4. Section F needs both.
+----------------------------------------------------------------------------------------------------
+EXEC logs.uspStartLoadRun @RunMode = N'Full', @AllowConcurrent = 1
+                        , @MachineName = @Machine
+                        , @ApplicationVersion = N'probe', @LoadRunId = @R1 OUTPUT;
+
+DECLARE @Ids TABLE (HandlerLoadStatusId INT NOT NULL, HandlerId NVARCHAR (12) NOT NULL
+                  , Sequence INT NOT NULL);
+
+-- Four status rows over THREE handlers, which is the pair of numbers section E needs: a run holds one
+-- row per source record and a handler can own several, so StatusRowCount and DistinctHandlerCount are
+-- different questions.
+INSERT INTO logs.HandlerLoadStatus
+      (LoadRunId, HandlerId, ActivityLocation, SourceType, Sequence, Status, Outcome
+     , AttemptCount, HttpStatusCode, CompletedDateUtc, DurationMs)
+OUTPUT inserted.HandlerLoadStatusId, inserted.HandlerId, inserted.Sequence INTO @Ids
+VALUES (@R1, N'MDPROBE00031', N'MD', N'N', 1, N'Succeeded', N'Inserted', 1, 200, SYSUTCDATETIME (), 100)
+     , (@R1, N'MDPROBE00031', N'MD', N'N', 2, N'Succeeded', N'Updated',  2, 200, SYSUTCDATETIME (), 200)
+     , (@R1, N'MDPROBE00032', N'MD', N'N', 1, N'Failed',    NULL,        3, 500, NULL, NULL)
+     , (@R1, N'MDPROBE00033', N'MD', N'N', 1, N'Skipped',   NULL,        0, NULL, NULL, NULL);
+
+DECLARE @S1 INT = (SELECT HandlerLoadStatusId FROM @Ids WHERE HandlerId = N'MDPROBE00031' AND Sequence = 1)
+      , @S3 INT = (SELECT HandlerLoadStatusId FROM @Ids WHERE HandlerId = N'MDPROBE00032' AND Sequence = 1)
+      , @S4 INT = (SELECT HandlerLoadStatusId FROM @Ids WHERE HandlerId = N'MDPROBE00033' AND Sequence = 1);
+
+-- Seven attempts, covering all five values of CK_logs_HandlerLoadAttempt_Outcome, both HTTP bands, and
+-- one Retry-After. AttemptNumber reaches 4, which is what MaxAttemptNumber must report.
+INSERT INTO logs.HandlerLoadAttempt
+      (HandlerLoadStatusId, LoadRunId, AttemptNumber, Outcome, HttpStatusCode, ResponseBytes
+     , RetryAfterSeconds, RequestPath)
+VALUES (@S1, @R1, 1, N'Succeeded', 200,  1000, NULL, N'/rcrainfo/rest/api/v1/handler/source')
+     , (@S1, @R1, 2, N'Succeeded', 200,  2000, NULL, N'/rcrainfo/rest/api/v1/handler/source')
+     , (@S3, @R1, 1, N'Failed',    500,  NULL, NULL, N'/rcrainfo/rest/api/v1/handler/source')
+     , (@S3, @R1, 2, N'Failed',    503,  NULL, NULL, N'/rcrainfo/rest/api/v1/handler/source')
+     , (@S3, @R1, 3, N'Throttled', 429,  NULL,   30, N'/rcrainfo/rest/api/v1/handler/source')
+     , (@S3, @R1, 4, N'TimedOut',  NULL, NULL, NULL, N'/rcrainfo/rest/api/v1/handler/source')
+     , (@S4, @R1, 1, N'Cancelled', NULL, NULL, NULL, N'/rcrainfo/rest/api/v1/handler/source');
+
+-- Four observations of THREE distinct types, which is the number that tells an operator whether one
+-- thing went wrong repeatedly or three things went wrong once.
+INSERT INTO logs.DataQualityObservation
+      (LoadRunId, HandlerLoadStatusId, ObservationType, Severity, HandlerId, Detail)
+VALUES (@R1, @S1, N'LookupMiss',      N'Error',   N'MDPROBE00031', N'Probe fixture.')
+     , (@R1, @S1, N'LookupMiss',      N'Warning', N'MDPROBE00031', N'Probe fixture.')
+     , (@R1, @S3, N'TruncatedValue',  N'Warning', N'MDPROBE00032', N'Probe fixture.')
+     , (@R1, @S3, N'UnknownProperty', N'Info',    N'MDPROBE00032', N'Probe fixture.');
+
+-- Counters that AGREE on all six compared pairs: Inserted 1, Updated 1, Unchanged 0, SoftDeleted 0,
+-- Skipped 1, Failed 1. Enumerated, Fetched and HttpRequestCount are set to values that agree with
+-- nothing -- 99, 77 and 123 against 4 status rows -- because they count enumeration and HTTP requests
+-- rather than status rows, and a summary that compared them would raise a permanent false alarm.
+-- 'PartiallySucceeded', not 'Succeeded': logs.uspCompleteLoadRun refuses 'Succeeded' alongside
+-- @SourceRecordsFailed = 1, because only a run reported 'Succeeded' may advance the watermark. That
+-- refusal is script 511's and it is right -- noted here because a reader of this fixture would otherwise
+-- expect the simpler status.
+EXEC logs.uspCompleteLoadRun
+      @LoadRunId = @R1, @Status = N'PartiallySucceeded'
+    , @SourceRecordsEnumerated = 99, @SourceRecordsFetched = 77, @HttpRequestCount = 123
+    , @HttpRetryCount = 6
+    , @SourceRecordsInserted = 1, @SourceRecordsUpdated = 1, @SourceRecordsUnchanged = 0
+    , @SourceRecordsSoftDeleted = 0, @SourceRecordsSkipped = 1, @SourceRecordsFailed = 1;
+
+EXEC logs.uspStartLoadRun @RunMode = N'Incremental', @AllowConcurrent = 1
+                        , @MachineName = @Machine
+                        , @ApplicationVersion = N'probe', @LoadRunId = @R2 OUTPUT;
+
+INSERT INTO logs.HandlerLoadStatus
+      (LoadRunId, HandlerId, ActivityLocation, SourceType, Sequence, Status, Outcome
+     , AttemptCount, HttpStatusCode, CompletedDateUtc, DurationMs)
+VALUES (@R2, N'MDPROBE00034', N'MD', N'N', 1, N'Succeeded', N'Unchanged', 1, 200, SYSUTCDATETIME (), 50);
+
+-- Counters that disagree: five insertions claimed over one unchanged row. This is what a run whose
+-- completion call ran against the wrong numbers looks like, and it is the case CounterDriftDetected
+-- exists to surface rather than smooth over.
+EXEC logs.uspCompleteLoadRun
+      @LoadRunId = @R2, @Status = N'Failed'
+    , @FailureMessage = N'Probe fixture: deliberate counter drift.'
+    , @SourceRecordsInserted = 5, @SourceRecordsUnchanged = 0;
+
+EXEC logs.uspStartLoadRun @RunMode = N'Incremental', @AllowConcurrent = 1
+                        , @MachineName = @Machine
+                        , @ApplicationVersion = N'probe', @LoadRunId = @R3 OUTPUT;
+
+INSERT INTO logs.HandlerLoadStatus
+      (LoadRunId, HandlerId, ActivityLocation, SourceType, Sequence, Status, Outcome
+     , AttemptCount, HttpStatusCode, CompletedDateUtc, DurationMs)
+VALUES (@R3, N'MDPROBE00035', N'MD', N'N', 1, N'InProgress', NULL, 1, NULL, NULL, NULL);
+
+EXEC logs.uspStartLoadRun @RunMode = N'Reconcile', @AllowConcurrent = 1
+                        , @MachineName = @Machine
+                        , @ApplicationVersion = N'probe', @LoadRunId = @R4 OUTPUT;
+EXEC logs.uspCompleteLoadRun @LoadRunId = @R4, @Status = N'Succeeded';
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @R4;
+
+PRINT CONCAT (N'Opened LoadRunIds ', @R1, N' (agrees), ', @R2, N' (drifts), ', @R3, N' (running), '
+            , @R4, N' (retired)');
+PRINT N'';
+
+----------------------------------------------------------------------------------------------------
+-- The projection's contract, written out. Seventy-one columns in the procedure's order.
+--
+-- LookupListsRefreshed is INT and not BIT on purpose -- it is a COUNT of lists refreshed, and getting
+-- that wrong here would be a caller writing 1 where 24 was meant.
+----------------------------------------------------------------------------------------------------
+CREATE TABLE #Summary
+(
+    LoadRunId                  INT             NULL,
+    RunMode                    NVARCHAR (20)   NULL,
+    ActivityLocation           NVARCHAR (2)    NULL,
+    RequestedFromDate          DATE            NULL,
+    RequestedToDate            DATE            NULL,
+    WatermarkBeforeDate        DATE            NULL,
+    WatermarkAfterDate         DATE            NULL,
+    OverlapDaysApplied         INT             NULL,
+    Status                     NVARCHAR (20)   NULL,
+    StartedDateUtc             DATETIME2       NULL,
+    CompletedDateUtc           DATETIME2       NULL,
+    ElapsedMs                  BIGINT          NULL,
+    ElapsedIsProvisional       BIT             NULL,
+    ResumedFromLoadRunId       INT             NULL,
+    LookupListsRefreshed       INT             NULL,
+    SourceRecordsEnumerated    INT             NULL,
+    SourceRecordsFetched       INT             NULL,
+    SourceRecordsInserted      INT             NULL,
+    SourceRecordsUpdated       INT             NULL,
+    SourceRecordsUnchanged     INT             NULL,
+    SourceRecordsSoftDeleted   INT             NULL,
+    SourceRecordsSkipped       INT             NULL,
+    SourceRecordsFailed        INT             NULL,
+    HttpRequestCount           INT             NULL,
+    HttpRetryCount             INT             NULL,
+    FailureMessage             NVARCHAR (4000) NULL,
+    InvokedBy                  NVARCHAR (128)  NULL,
+    MachineName                NVARCHAR (128)  NULL,
+    ProcessId                  INT             NULL,
+    ApplicationVersion         NVARCHAR (50)   NULL,
+    IsDeleted                  BIT             NULL,
+    auditModifiedDateUtc       DATETIME2       NULL,
+    StatusRowCount             INT             NULL,
+    StatusRowsSoftDeleted      INT             NULL,
+    StatusPending              INT             NULL,
+    StatusInProgress           INT             NULL,
+    StatusSucceeded            INT             NULL,
+    StatusFailed               INT             NULL,
+    StatusSkipped              INT             NULL,
+    OutcomeInserted            INT             NULL,
+    OutcomeUpdated             INT             NULL,
+    OutcomeUnchanged           INT             NULL,
+    OutcomeSoftDeleted         INT             NULL,
+    OutcomeNotSet              INT             NULL,
+    DistinctHandlerCount       INT             NULL,
+    AttemptCountTotal          BIGINT          NULL,
+    OurFailureCount            INT             NULL,
+    DurationMeasuredCount      INT             NULL,
+    TotalDurationMs            BIGINT          NULL,
+    MaxDurationMs              INT             NULL,
+    FirstSeenMinDateUtc        DATETIME2       NULL,
+    LastCompletedDateUtc       DATETIME2       NULL,
+    AttemptRowCount            INT             NULL,
+    AttemptRowsSoftDeleted     INT             NULL,
+    AttemptSucceeded           INT             NULL,
+    AttemptFailed              INT             NULL,
+    AttemptThrottled           INT             NULL,
+    AttemptTimedOut            INT             NULL,
+    AttemptCancelled           INT             NULL,
+    MaxAttemptNumber           INT             NULL,
+    ResponseBytesTotal         BIGINT          NULL,
+    Http4xxCount               INT             NULL,
+    Http5xxCount               INT             NULL,
+    MaxRetryAfterSeconds       INT             NULL,
+    ObservationRowCount        INT             NULL,
+    ObservationRowsSoftDeleted INT             NULL,
+    ObservationErrorCount      INT             NULL,
+    ObservationWarningCount    INT             NULL,
+    ObservationInfoCount       INT             NULL,
+    ObservationTypeCount       INT             NULL,
+    CounterDriftDetected       BIT             NULL
+);
+
+PRINT N'=== A. Refusals, and every one of them recorded ===';
+
+SELECT @Before = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]';
+
+DECLARE @cases TABLE (Ordinal INT IDENTITY (1,1), Label NVARCHAR (100), RunId INT);
+INSERT INTO @cases (Label, RunId) VALUES
+  (N'@LoadRunId = 0, the uninitialised integer', 0)
+, (N'@LoadRunId negative',                       -7)
+, (N'@LoadRunId that was never issued',          2000000000)
+, (N'@LoadRunId of a soft-deleted run',          @R4);
+
+DECLARE @i INT = 1, @lbl NVARCHAR (100), @arg INT;
+SET @n = (SELECT COUNT (*) FROM @cases);
+WHILE @i <= @n
+BEGIN
+    SELECT @lbl = Label, @arg = RunId FROM @cases WHERE Ordinal = @i;
+    BEGIN TRY
+        -- Plain EXEC, not INSERT ... EXEC. See the note at the top: the latter would doom a transaction
+        -- and make the recording assertion below untestable by construction.
+        EXEC logs.uspGetLoadRunSummary @LoadRunId = @arg;
+        PRINT CONCAT (N'  FAIL  ', @lbl, N' was accepted.');
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT (N'  ok    ', @lbl, N' -> ', LEFT (ERROR_MESSAGE (), 78));
+    END CATCH;
+    SET @i += 1;
+END;
+
+-- The retired run's refusal has to say what to do about it, because it is the one refusal here that is
+-- a single argument away from an answer.
+BEGIN TRY
+    EXEC logs.uspGetLoadRunSummary @LoadRunId = @R4;
+END TRY
+BEGIN CATCH
+    SET @Actual = ERROR_MESSAGE ();
+END CATCH;
+PRINT CONCAT (N'  retired-run message names @IncludeDeleted = '
+            , CASE WHEN @Actual LIKE N'%@IncludeDeleted%' AND @Actual LIKE N'%soft-deleted%'
+                   THEN N'yes   ok  (a mistyped id and a retired run are told apart)'
+                   ELSE N'NO    FAIL' END);
+
+-- [R15]: THE POINT OF THIS SECTION. This procedure writes no successful-path row, so if the CATCH were
+-- dropped the five refusals above would be recorded nowhere and the probe's own output would be the
+-- only trace they ever existed. Each one must be an ORPHAN row: Successful = 0 and ElapsedMilliseconds
+-- NULL, with the duration carried in ContextMessage instead.
+SELECT @After = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]';
+PRINT CONCAT (N'  ExecutionLog rows written by the refusals = ', @After - @Before
+            , CASE WHEN @After - @Before = 5 THEN N'   ok  (all five recorded)' ELSE N'   FAIL  expected 5' END);
+
+SELECT @n = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]'
+   AND Successful = 0
+   AND EndDateUtc IS NOT NULL
+   AND ElapsedMilliseconds IS NULL
+   AND ContextMessage LIKE N'%ElapsedMs=%'
+   AND StartDateUtc >= @Stamp;
+PRINT CONCAT (N'  orphan rows with the duration in ContextMessage = ', @n
+            , CASE WHEN @n = 5 THEN N'   ok  (ElapsedMilliseconds stays NULL, which is what identifies an orphan)'
+                   ELSE N'   FAIL  expected 5' END);
+
+SELECT @n = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]'
+   AND StartDateUtc >= @Stamp
+   AND KeyParameters IS NULL;
+PRINT CONCAT (N'  recorded failures missing KeyParameters = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok  (what the caller sent is on every row)' ELSE N'   FAIL' END);
+
+-- An omitted @LoadRunId must not log as `LoadRunId=,`, which reads as a truncated message rather than
+-- as the caller having asked for the latest run.
+SELECT @n = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]'
+   AND StartDateUtc >= @Stamp
+   AND KeyParameters NOT LIKE N'LoadRunId=[0-9-]%';
+PRINT CONCAT (N'  recorded rows whose KeyParameters lost the run id = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== A2. G37: inside a transaction the caller doomed, NOTHING can be recorded ===';
+
+-- Asserted rather than discovered. This is the one case where AR8's promise does not hold, and it is not
+-- a defect in this procedure: SET XACT_ABORT ON dooms the caller's transaction on the THROW, and error
+-- 3930 refuses every write to the log until it is rolled back. A writing procedure escapes it by rolling
+-- back the transaction it OWNS; a read owns none. Pinned here so that a future change which appears to
+-- fix it, or which quietly reintroduces the rollback to "make logging work", is visible.
+SELECT @Before = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]';
+
+DECLARE @XactState INT, @Recorded INT;
+
+BEGIN TRANSACTION;
+BEGIN TRY
+    EXEC logs.uspGetLoadRunSummary @LoadRunId = 0;
+END TRY
+BEGIN CATCH
+    -- A SELECT is still permitted in a doomed transaction; only writes are refused. Both values go into
+    -- variables, which are not transactional and so survive the rollback below.
+    SET @XactState = XACT_STATE ();
+    SELECT @Recorded = COUNT (*) - @Before FROM logs.ExecutionLog
+     WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]';
+END CATCH;
+
+-- The caller's transaction, rolled back by the caller. That is the whole point of the correction.
+IF XACT_STATE () <> 0
+BEGIN
+    ROLLBACK TRANSACTION;
+END;
+
+PRINT CONCAT (N'  XACT_STATE inside the CATCH = ', @XactState
+            , CASE WHEN @XactState = -1 THEN N'   ok  (doomed, as XACT_ABORT ON requires)'
+                   ELSE N'   note  not doomed; the rest of this section proves less than intended' END);
+PRINT CONCAT (N'  log rows written while doomed = ', @Recorded
+            , CASE WHEN @Recorded = 0
+                   THEN N'   ok  (error 3930 -- the documented G37 boundary, not a regression)'
+                   ELSE N'   CHANGED  something now CAN record here; G37 may be resolved, update the docs' END);
+
+PRINT N'';
+PRINT N'=== B. One run, one row, and the successful path writes NO log row ===';
+
+SELECT @Before = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]';
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @LoadRunId = @R1;
+
+SELECT @After = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]';
+PRINT CONCAT (N'  ExecutionLog rows written by a successful summary = ', @After - @Before
+            , CASE WHEN @After = @Before THEN N'   ok  (a panel on a timer must not log)' ELSE N'   FAIL' END);
+
+SELECT @n = COUNT (*) FROM #Summary;
+PRINT CONCAT (N'  rows returned = ', @n
+            , CASE WHEN @n = 1 THEN N'   ok  (exactly one, and 71 columns wide -- INSERT ... EXEC asserted the shape)'
+                   ELSE N'   FAIL  expected 1' END);
+
+PRINT N'';
+PRINT N'=== C. Observed counts: the breakdowns are counted, not taken from the run''s counters ===';
+
+SELECT @Actual = CONCAT (N'rows=', StatusRowCount, N' handlers=', DistinctHandlerCount
+                       , N' Succeeded=', StatusSucceeded, N' Failed=', StatusFailed
+                       , N' Skipped=', StatusSkipped, N' Pending=', StatusPending
+                       , N' InProgress=', StatusInProgress)
+  FROM #Summary;
+PRINT CONCAT (N'  status: ', @Actual);
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE StatusRowCount = 4 AND DistinctHandlerCount = 3 AND StatusSucceeded = 2 AND StatusFailed = 1
+   AND StatusSkipped = 1 AND StatusPending = 0 AND StatusInProgress = 0;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  (4 rows over 3 handlers -- a handler can own more than one source record)'
+                   ELSE N'FAIL  expected rows=4 handlers=3 Succeeded=2 Failed=1 Skipped=1' END);
+
+SELECT @Actual = CONCAT (N'Inserted=', OutcomeInserted, N' Updated=', OutcomeUpdated
+                       , N' Unchanged=', OutcomeUnchanged, N' SoftDeleted=', OutcomeSoftDeleted
+                       , N' NotSet=', OutcomeNotSet)
+  FROM #Summary;
+PRINT CONCAT (N'  outcome: ', @Actual);
+-- The five Outcome columns must sum to StatusRowCount, which is the only reason OutcomeNotSet exists:
+-- CK_logs_HandlerLoadStatus_Outcome permits NULL, and without a column for it the arithmetic would
+-- silently fail to add up and a reader would blame the query.
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE OutcomeInserted = 1 AND OutcomeUpdated = 1 AND OutcomeUnchanged = 0 AND OutcomeSoftDeleted = 0
+   AND OutcomeNotSet = 2
+   AND OutcomeInserted + OutcomeUpdated + OutcomeUnchanged + OutcomeSoftDeleted + OutcomeNotSet
+     = StatusRowCount;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1 THEN N'ok  (and the five sum to StatusRowCount)'
+                            ELSE N'FAIL  expected Inserted=1 Updated=1 NotSet=2, summing to 4' END);
+
+SELECT @Actual = CONCAT (N'AttemptCountTotal=', AttemptCountTotal, N' OurFailureCount=', OurFailureCount
+                       , N' measured=', DurationMeasuredCount, N' totalMs=', TotalDurationMs
+                       , N' maxMs=', COALESCE (CAST (MaxDurationMs AS NVARCHAR (11)), N'(null)'))
+  FROM #Summary;
+PRINT CONCAT (N'  work: ', @Actual);
+-- No AVG anywhere: DurationMeasuredCount is the denominator, returned so the caller can divide by the
+-- right number. Two of the four rows never finished, so an average over four would be wrong by half.
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE AttemptCountTotal = 6 AND OurFailureCount = 0 AND DurationMeasuredCount = 2
+   AND TotalDurationMs = 300 AND MaxDurationMs = 200;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  (the denominator is returned instead of a truncating AVG)'
+                   ELSE N'FAIL  expected 6 / 0 / 2 / 300 / 200' END);
+
+SELECT @Actual = CONCAT (N'rows=', AttemptRowCount, N' S=', AttemptSucceeded, N' F=', AttemptFailed
+                       , N' T=', AttemptThrottled, N' TO=', AttemptTimedOut, N' C=', AttemptCancelled
+                       , N' maxAttempt=', MaxAttemptNumber, N' bytes=', ResponseBytesTotal
+                       , N' 4xx=', Http4xxCount, N' 5xx=', Http5xxCount
+                       , N' maxRetryAfter=', MaxRetryAfterSeconds)
+  FROM #Summary;
+PRINT CONCAT (N'  attempts: ', @Actual);
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE AttemptRowCount = 7 AND AttemptSucceeded = 2 AND AttemptFailed = 2 AND AttemptThrottled = 1
+   AND AttemptTimedOut = 1 AND AttemptCancelled = 1 AND MaxAttemptNumber = 4
+   AND ResponseBytesTotal = 3000 AND Http4xxCount = 1 AND Http5xxCount = 2
+   AND MaxRetryAfterSeconds = 30
+   AND AttemptSucceeded + AttemptFailed + AttemptThrottled + AttemptTimedOut + AttemptCancelled
+     = AttemptRowCount;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  (all five outcomes, both HTTP bands, and the G21 Retry-After)'
+                   ELSE N'FAIL  expected 7 / 2 2 1 1 1 / 4 / 3000 / 1 / 2 / 30' END);
+
+SELECT @Actual = CONCAT (N'rows=', ObservationRowCount, N' E=', ObservationErrorCount
+                       , N' W=', ObservationWarningCount, N' I=', ObservationInfoCount
+                       , N' types=', ObservationTypeCount)
+  FROM #Summary;
+PRINT CONCAT (N'  observations: ', @Actual);
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE ObservationRowCount = 4 AND ObservationErrorCount = 1 AND ObservationWarningCount = 2
+   AND ObservationInfoCount = 1 AND ObservationTypeCount = 3;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  (4 rows of 3 types -- one thing ten times is not ten things once)'
+                   ELSE N'FAIL  expected 4 / 1 2 1 / 3' END);
+
+PRINT N'';
+PRINT N'=== C2. CounterDriftDetected: a flag, never a correction ===';
+
+-- R1's counters agree on all six compared pairs while Enumerated (99), Fetched (77) and
+-- HttpRequestCount (123) agree with nothing. If any of those three were in the comparison this would
+-- read 1, and it would read 1 on every real run forever.
+SELECT @Actual = CONCAT (N'drift=', COALESCE (CAST (CounterDriftDetected AS NVARCHAR (3)), N'NULL')
+                       , N' (Enumerated=', SourceRecordsEnumerated, N' Fetched=', SourceRecordsFetched
+                       , N' HttpRequests=', HttpRequestCount, N' vs 4 status rows)')
+  FROM #Summary;
+PRINT CONCAT (N'  R1, counters agree: ', @Actual);
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE CounterDriftDetected = 0 AND SourceRecordsEnumerated = 99 AND SourceRecordsFetched = 77
+   AND HttpRequestCount = 123;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  (Enumerated, Fetched and HttpRequestCount are excluded on purpose)'
+                   ELSE N'FAIL  expected drift=0 with those three disagreeing' END);
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @LoadRunId = @R2;
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE CounterDriftDetected = 1 AND SourceRecordsInserted = 5 AND OutcomeInserted = 0
+   AND OutcomeUnchanged = 1;
+PRINT CONCAT (N'  R2, counters disagree: '
+            , CASE WHEN @n = 1
+                   THEN N'drift=1   ok  (both numbers returned, neither replaced)'
+                   ELSE N'FAIL  expected drift=1 with Inserted 5 over 0' END);
+
+-- And the run is still Failed with its message intact, because the summary reports the disagreement
+-- without touching either side of it.
+SELECT @Actual = CONCAT (Status, N' / ', LEFT (COALESCE (FailureMessage, N'(null)'), 40)) FROM #Summary;
+PRINT CONCAT (N'    ', @Actual);
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @LoadRunId = @R3;
+SELECT @n = COUNT (*) FROM #Summary WHERE CounterDriftDetected IS NULL AND Status = N'Running';
+PRINT CONCAT (N'  R3, still Running: '
+            , CASE WHEN @n = 1
+                   THEN N'drift=NULL   ok  (work in progress is not drift)'
+                   ELSE N'FAIL  expected drift=NULL' END);
+
+-- ElapsedMs measured to now rather than left NULL, with the companion bit saying so. "How long has this
+-- run been going" is the question asked most often about a run that is still going.
+SELECT @n = COUNT (*) FROM #Summary WHERE ElapsedIsProvisional = 1 AND ElapsedMs >= 0
+                                      AND CompletedDateUtc IS NULL;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  ElapsedIsProvisional = 1 and ElapsedMs measured to now'
+                   ELSE N'FAIL' END);
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @LoadRunId = @R1;
+SELECT @n = COUNT (*) FROM #Summary WHERE ElapsedIsProvisional = 0 AND ElapsedMs >= 0
+                                      AND CompletedDateUtc IS NOT NULL;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  R1 is finished, so ElapsedIsProvisional = 0'
+                   ELSE N'FAIL' END);
+
+PRINT N'';
+PRINT N'=== D. The derived counts ignore IsDeleted, which is the one exception in this database ===';
+
+-- Retire one status row, one attempt and one observation of R1. The status row chosen is the SKIPPED
+-- one, so that if the counts honoured IsDeleted = 0 then StatusSkipped would fall to 0, disagree with
+-- SourceRecordsSkipped = 1, and CounterDriftDetected would flip to 1 -- reporting retention as drift.
+-- That is the failure this section exists to catch, and both halves of it are asserted below.
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE HandlerLoadStatusId = @S4;
+UPDATE logs.HandlerLoadAttempt SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE HandlerLoadStatusId = @S4 AND LoadRunId = @R1;
+UPDATE logs.DataQualityObservation SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @R1 AND ObservationType = N'UnknownProperty';
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @LoadRunId = @R1;
+
+SELECT @Actual = CONCAT (N'status ', StatusRowCount, N' (', StatusRowsSoftDeleted, N' retired)'
+                       , N', attempts ', AttemptRowCount, N' (', AttemptRowsSoftDeleted, N' retired)'
+                       , N', observations ', ObservationRowCount, N' ('
+                       , ObservationRowsSoftDeleted, N' retired)')
+  FROM #Summary;
+PRINT CONCAT (N'  ', @Actual);
+SELECT @n = COUNT (*) FROM #Summary
+ WHERE StatusRowCount = 4 AND StatusRowsSoftDeleted = 1 AND StatusSkipped = 1
+   AND AttemptRowCount = 7 AND AttemptRowsSoftDeleted = 1
+   AND ObservationRowCount = 4 AND ObservationRowsSoftDeleted = 1;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  (the totals hold -- a summary states what the run DID, and retention did not change that)'
+                   ELSE N'FAIL  a retired child row changed the count of what the run did' END);
+
+SELECT @n = COUNT (*) FROM #Summary WHERE CounterDriftDetected = 0;
+PRINT CONCAT (N'    ', CASE WHEN @n = 1
+                   THEN N'ok  drift is still 0 -- retention is not reported as drift'
+                   ELSE N'FAIL  G7 retention made CounterDriftDetected lie' END);
+
+-- @IncludeDeleted has exactly one job, and this is the assertion that it stays that way: turning it on
+-- must not move any of the derived counts.
+DECLARE @Sig NVARCHAR (200);
+SELECT @Sig = CONCAT (StatusRowCount, N'/', AttemptRowCount, N'/', ObservationRowCount) FROM #Summary;
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @LoadRunId = @R1, @IncludeDeleted = 1;
+SELECT @Actual = CONCAT (StatusRowCount, N'/', AttemptRowCount, N'/', ObservationRowCount) FROM #Summary;
+PRINT CONCAT (N'  @IncludeDeleted = 0 -> ', @Sig, N', @IncludeDeleted = 1 -> ', @Actual
+            , CASE WHEN @Sig = @Actual
+                   THEN N'   ok  (it governs the RUN only)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== E. A retired RUN is what @IncludeDeleted is for ===';
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @LoadRunId = @R4, @IncludeDeleted = 1;
+SELECT @n = COUNT (*), @m = MIN (CAST (IsDeleted AS INT)) FROM #Summary;
+PRINT CONCAT (N'  retired run with @IncludeDeleted = 1 -> ', @n, N' row, IsDeleted = ', COALESCE (@m, -1)
+            , CASE WHEN @n = 1 AND @m = 1
+                   THEN N'   ok  (returned AND marked, so a panel can say so)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== F. @LoadRunId omitted means the most recent run the caller can see ===';
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary;
+SELECT @n = LoadRunId FROM #Summary;
+PRINT CONCAT (N'  default -> LoadRunId ', COALESCE (@n, -1), N' (R3 = ', @R3, N', R4 = ', @R4, N')'
+            , CASE WHEN @n = @R3
+                   THEN N'   ok  (R4 is newer but retired, so "latest" respects IsDeleted)'
+                   ELSE N'   FAIL  expected R3' END);
+
+DELETE FROM #Summary;
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary @IncludeDeleted = 1;
+SELECT @n = LoadRunId FROM #Summary;
+PRINT CONCAT (N'  default with @IncludeDeleted = 1 -> LoadRunId ', COALESCE (@n, -1)
+            , CASE WHEN @n = @R4 THEN N'   ok  (now the retired newest one)' ELSE N'   FAIL  expected R4' END);
+
+PRINT N'';
+PRINT N'=== G. No runs at all is an EMPTY RESULT SET, not an error and not a missing result set ===';
+
+-- The one transaction this probe opens, and it is rolled back unconditionally. Reaching the empty path
+-- needs a database with no visible run, and this one has years of them -- so every run is retired
+-- inside a transaction this script OWNS, the empty answer is asserted, and the rollback puts IsDeleted
+-- and auditModifiedDateUtc back on every row it touched. Nothing is removed at any point.
+BEGIN TRANSACTION;
+
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE IsDeleted = 0;
+
+DELETE FROM #Summary;
+-- INSERT ... EXEC is the assertion, not the SELECT: it succeeds only if a result set with these 71
+-- columns came back. A procedure that returned NO result set on this path -- an early RETURN -- would
+-- still leave the table empty, and the count below could not tell the two apart. This can distinguish
+-- them because INSERT ... EXEC of nothing succeeds and INSERT ... EXEC of no result set does not.
+INSERT INTO #Summary EXEC logs.uspGetLoadRunSummary;
+SELECT @n = COUNT (*) FROM #Summary;
+
+ROLLBACK TRANSACTION;
+
+PRINT CONCAT (N'  rows on a database with no visible run = ', @n
+            , CASE WHEN @n = 0
+                   THEN N'   ok  (a new installation is not a fault, and the columns still exist)'
+                   ELSE N'   FAIL  expected 0' END);
+
+SELECT @n = COUNT (*) FROM logs.LoadRun WHERE IsDeleted = 0;
+PRINT CONCAT (N'  visible runs after the rollback = ', @n
+            , CASE WHEN @n > 0 THEN N'   ok  (the section put everything back)'
+                   ELSE N'   FAIL  the rollback did not restore the runs' END);
+
+PRINT N'';
+PRINT N'=== H. Nothing the monitor can read carries a credential ===';
+
+SELECT @n = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]'
+   AND StartDateUtc >= @Stamp
+   AND (KeyParameters LIKE N'%api%key%' OR KeyParameters LIKE N'%?%' OR KeyParameters LIKE N'%Bearer%'
+     OR KeyParameters LIKE N'%Authorization%' OR ContextMessage LIKE N'%Bearer%');
+PRINT CONCAT (N'  recorded rows whose KeyParameters or ContextMessage looks like a credential = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok  (identifiers and counts only)' ELSE N'   FAIL' END);
+
+-- Both of this procedure's parameters are in @KeyParameters in full, and that is correct: a run id and
+-- a bit. There is no free-text parameter here for anything else to arrive in -- which is the difference
+-- between this read and dbo.uspSearchHandlerSource, whose search term must never be logged.
+SELECT TOP (1) @Actual = KeyParameters FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunSummary]' AND StartDateUtc >= @Stamp
+ ORDER BY ExecutionLogId DESC;
+PRINT CONCAT (N'  a recorded KeyParameters reads: ', COALESCE (@Actual, N'(null)'));
+
+PRINT N'';
+PRINT N'=== Cleanup: soft delete only ===';
+
+-- The Running fixture run is closed out before it is retired. A probe that left a run Running would
+-- show up in the monitor as a live load, and would make the next run of this probe start from a state
+-- section C did not expect.
+UPDATE logs.LoadRun
+   SET Status = N'Abandoned', CompletedDateUtc = SYSUTCDATETIME ()
+     , auditModifiedBy = ORIGINAL_LOGIN (), auditModifiedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @R3 AND Status = N'Running';
+
+UPDATE logs.HandlerLoadAttempt SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE IsDeleted = 0 AND LoadRunId IN (@R1, @R2, @R3, @R4);
+UPDATE logs.DataQualityObservation SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE IsDeleted = 0 AND LoadRunId IN (@R1, @R2, @R3, @R4);
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE IsDeleted = 0 AND HandlerId LIKE N'MDPROBE0003%';
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE IsDeleted = 0 AND LoadRunId IN (@R1, @R2, @R3, @R4);
+
+DROP TABLE #Summary;
+
+PRINT N'  done.';

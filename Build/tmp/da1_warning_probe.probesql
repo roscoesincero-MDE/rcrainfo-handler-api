@@ -1,0 +1,10 @@
+SET NOCOUNT ON;
+DECLARE @P NVARCHAR (MAX) = N'[{"retrievedDateUtc":"2026-09-05T13:00:00",
+    "handler":{"handlerId":"MDTEST00002","activityLocation":"MD","type":{"code":"A"},
+               "sequence":3,"handlerName":"Probe Facility Two v2"}}]';
+PRINT N'-- update pass (expect one row, no warning 8153) --';
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9020;
+PRINT N'-- unchanged pass (expect zero rows, counts render as 0) --';
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9021;
+SELECT KeyParameters, Comments FROM logs.ExecutionLog
+ WHERE KeyParameters LIKE N'LoadRunId=902%' ORDER BY ExecutionLogId;

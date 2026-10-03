@@ -1,0 +1,104 @@
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @P NVARCHAR (MAX);
+
+PRINT N'--- 1. INSERT ---------------------------------------------------------------';
+SET @P = N'[{"retrievedDateUtc":"2026-09-05T11:02:31","handler":{"handlerId":"MDTEST00001",
+             "activityLocation":"MD","type":{"code":"N","description":"Notifier"},
+             "sequence":1,"handlerName":"Probe Facility One","currentRecord":true,
+             "receivedDate":"2020-04-01","reportCycle":2021,
+             "siteLocation":{"streetNumber":"100","street1":"MAIN ST","city":"BALTIMORE",
+                             "state":{"code":"MD"},"zip":"21201"}}}]';
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9001;
+
+SELECT HandlerId, SourceType, Sequence, HandlerName, SiteLocationCity, IsDeleted
+     , auditCreatedDateUtc, auditModifiedDateUtc
+  FROM dbo.HandlerSource WHERE HandlerId = N'MDTEST00001';
+SELECT LEFT (RawJson, 40) AS RawJsonHead, PayloadSha256, RetrievedDateUtc
+  FROM dbo.HandlerSourceRawJson r
+  JOIN dbo.HandlerSource h ON h.HandlerSourceId = r.HandlerSourceId
+ WHERE h.HandlerId = N'MDTEST00001';
+
+PRINT N'--- 2. UNCHANGED RE-RUN (must return zero rows, must not move auditModifiedDateUtc) ---';
+DECLARE @ModBefore DATETIME2 = (SELECT auditModifiedDateUtc FROM dbo.HandlerSource WHERE HandlerId = N'MDTEST00001');
+DECLARE @RawModBefore DATETIME2 = (SELECT r.auditModifiedDateUtc FROM dbo.HandlerSourceRawJson r
+                                     JOIN dbo.HandlerSource h ON h.HandlerSourceId = r.HandlerSourceId
+                                    WHERE h.HandlerId = N'MDTEST00001');
+WAITFOR DELAY '00:00:00.020';
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9002;
+SELECT CASE WHEN auditModifiedDateUtc = @ModBefore THEN 'PASS parent not touched'
+            ELSE 'FAIL parent auditModifiedDateUtc moved' END AS ParentChurn
+  FROM dbo.HandlerSource WHERE HandlerId = N'MDTEST00001';
+SELECT CASE WHEN r.auditModifiedDateUtc = @RawModBefore THEN 'PASS rawjson not touched'
+            ELSE 'FAIL rawjson auditModifiedDateUtc moved' END AS RawChurn
+  FROM dbo.HandlerSourceRawJson r JOIN dbo.HandlerSource h ON h.HandlerSourceId = r.HandlerSourceId
+ WHERE h.HandlerId = N'MDTEST00001';
+
+PRINT N'--- 3. UPDATE (one changed column) ----------------------------------------';
+SET @P = REPLACE (@P, N'Probe Facility One', N'Probe Facility One RENAMED');
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9003;
+SELECT HandlerName
+     , CASE WHEN auditModifiedDateUtc > @ModBefore THEN 'PASS modified moved' ELSE 'FAIL' END AS Stamp
+     , CASE WHEN auditCreatedDateUtc  = auditCreatedDateUtc THEN '' END AS x
+  FROM dbo.HandlerSource WHERE HandlerId = N'MDTEST00001';
+
+PRINT N'--- 4. ADDENDUM-ONLY CHANGE (no mirrored column differs; rawjson hash must) ---';
+DECLARE @ParentModBefore DATETIME2 = (SELECT auditModifiedDateUtc FROM dbo.HandlerSource WHERE HandlerId = N'MDTEST00001');
+SET @P = REPLACE (@P, N'"sequence":1,', N'"sequence":1,"addendum":{"washington":{"note":"unmodelled"}},');
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9004;
+SELECT CASE WHEN auditModifiedDateUtc = @ParentModBefore THEN 'PASS parent untouched'
+            ELSE 'FAIL parent updated for an unmirrored change' END AS ParentUntouched
+  FROM dbo.HandlerSource WHERE HandlerId = N'MDTEST00001';
+SELECT CASE WHEN CHARINDEX (N'addendum', r.RawJson) > 0 THEN 'PASS rawjson captured addendum'
+            ELSE 'FAIL rawjson stale' END AS RawCaught
+  FROM dbo.HandlerSourceRawJson r JOIN dbo.HandlerSource h ON h.HandlerSourceId = r.HandlerSourceId
+ WHERE h.HandlerId = N'MDTEST00001';
+
+PRINT N'--- 5. REVIVE A SOFT-DELETED ROW ------------------------------------------';
+UPDATE dbo.HandlerSource SET IsDeleted = 1, auditModifiedDateUtc = SYSUTCDATETIME ()
+ WHERE HandlerId = N'MDTEST00001';
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9005;
+SELECT COUNT (*) AS RowsWithThatKey
+     , SUM (CAST (IsDeleted AS INT)) AS StillDeleted
+  FROM dbo.HandlerSource WHERE HandlerId = N'MDTEST00001';
+
+PRINT N'--- 6. TWO ELEMENTS, ONE NEW ONE EXISTING --------------------------------';
+SET @P = N'[{"retrievedDateUtc":"2026-09-05T12:00:00","handler":{"handlerId":"MDTEST00001",
+             "activityLocation":"MD","type":{"code":"N"},"sequence":1,
+             "handlerName":"Probe Facility One RENAMED"}}
+           ,{"retrievedDateUtc":"2026-09-05T12:00:00","handler":{"handlerId":"MDTEST00002",
+             "activityLocation":"MD","type":{"code":"A"},"sequence":3,
+             "handlerName":"Probe Facility Two"}}]';
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = @P, @LoadRunId = 9006;
+
+PRINT N'--- 7. EMPTY ARRAY (must succeed, zero rows) -----------------------------';
+EXEC dbo.uspMergeHandlerSourceBatch @Payload = N'[]', @LoadRunId = 9007;
+
+PRINT N'--- 8. NEGATIVES ---------------------------------------------------------';
+BEGIN TRY EXEC dbo.uspMergeHandlerSourceBatch @Payload = N'{not json', @LoadRunId = 9008; END TRY
+BEGIN CATCH PRINT N'  8a malformed  -> ' + ERROR_MESSAGE (); END CATCH;
+
+BEGIN TRY EXEC dbo.uspMergeHandlerSourceBatch @Payload = N'{"handler":{"handlerId":"MDTEST00003"}}', @LoadRunId = 9009; END TRY
+BEGIN CATCH PRINT N'  8b bare object -> ' + ERROR_MESSAGE (); END CATCH;
+
+BEGIN TRY EXEC dbo.uspMergeHandlerSourceBatch @Payload = N'[{"handler":{"handlerId":"MDTEST00003","activityLocation":"MD","type":{"code":"N"}}}]', @LoadRunId = 9010; END TRY
+BEGIN CATCH PRINT N'  8c null key    -> ' + ERROR_MESSAGE (); END CATCH;
+
+BEGIN TRY EXEC dbo.uspMergeHandlerSourceBatch @Payload = N'[{"handler":{"handlerId":"MDTEST00003XXXXXXXX","activityLocation":"MD","type":{"code":"N"},"sequence":1}}]', @LoadRunId = 9011; END TRY
+BEGIN CATCH PRINT N'  8d wide key    -> ' + ERROR_MESSAGE (); END CATCH;
+
+BEGIN TRY EXEC dbo.uspMergeHandlerSourceBatch @Payload = N'[{"handler":{"handlerId":"MDTEST00004","activityLocation":"MD","type":{"code":"N"},"sequence":1}}
+                                                          ,{"handler":{"handlerId":"MDTEST00004","activityLocation":"MD","type":{"code":"N"},"sequence":1}}]', @LoadRunId = 9012; END TRY
+BEGIN CATCH PRINT N'  8e duplicate   -> ' + ERROR_MESSAGE (); END CATCH;
+
+PRINT N'--- 9. AR8 LOG ROWS ------------------------------------------------------';
+SELECT ExecutionLogId, KeyParameters, Successful, ReCreatedAfterRollback
+     , ElapsedMilliseconds, LEFT (COALESCE (Comments, ContextMessage, ErrorMessage), 90) AS Detail
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspMergeHandlerSourceBatch]'
+ ORDER BY ExecutionLogId;
+
+PRINT N'--- 10. STATE ------------------------------------------------------------';
+SELECT HandlerId, SourceType, Sequence, HandlerName, IsDeleted FROM dbo.HandlerSource
+ WHERE HandlerId LIKE N'MDTEST%' ORDER BY HandlerId, Sequence;

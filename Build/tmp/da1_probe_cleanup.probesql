@@ -1,0 +1,28 @@
+-- Soft delete, not DELETE: there is no hard delete anywhere in this database, and a probe is not an
+-- exception to that. The rows stay visible to vwHandlerSourceHistory, which is the correct record of
+-- what the DA1 measurements did.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @NowUtc DATETIME2 = SYSUTCDATETIME ();
+
+UPDATE r
+   SET IsDeleted            = 1
+     , auditDeletedBy       = ORIGINAL_LOGIN ()
+     , auditDeletedDateUtc  = @NowUtc
+     , auditModifiedBy      = ORIGINAL_LOGIN ()
+     , auditModifiedDateUtc = @NowUtc
+  FROM dbo.HandlerSourceRawJson AS r
+  JOIN dbo.HandlerSource        AS h ON h.HandlerSourceId = r.HandlerSourceId
+ WHERE h.HandlerId LIKE N'MDTEST%' AND r.IsDeleted = 0;
+
+UPDATE dbo.HandlerSource
+   SET IsDeleted            = 1
+     , auditDeletedBy       = ORIGINAL_LOGIN ()
+     , auditDeletedDateUtc  = @NowUtc
+     , auditModifiedBy      = ORIGINAL_LOGIN ()
+     , auditModifiedDateUtc = @NowUtc
+ WHERE HandlerId LIKE N'MDTEST%' AND IsDeleted = 0;
+
+SELECT HandlerId, SourceType, Sequence, IsDeleted, auditDeletedDateUtc
+  FROM dbo.HandlerSource WHERE HandlerId LIKE N'MDTEST%' ORDER BY HandlerId;

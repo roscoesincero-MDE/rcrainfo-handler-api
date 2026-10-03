@@ -1,0 +1,969 @@
+/***********************************************************************************************************************
+da4_searchhandlersource.probesql -- dbo.uspSearchHandlerSource (script 506).
+
+Run: sqlcmd -S localhost -E -C -I -d RCRAInfo -y 0 -i "C:\~MDE-55TT2J4\RCRAInfo\build\tmp\da4_searchhandlersource.probesql"
+-I is REQUIRED. dbo.HandlerSource carries a filtered unique index (UX_dbo_HandlerSource_Natural), and any write to a
+table with one needs SET QUOTED_IDENTIFIER ON or the insert fails with error 1934 naming indexed views.
+
+WHAT THIS PROBE IS FOR. 506 is the last read of Workstream DA and the only procedure in this database that takes a
+free-text parameter. Four earlier headers -- 501, 503, 504 and 505 -- record a rule in advance for exactly this moment:
+the search term is not logged. This file's job is to turn as much of 506's header as possible into something a run can
+fail on, and in particular sections W (the LIKE escaping, where a typed % would otherwise match every handler in
+Maryland), R (the seven MatchRank levels and the two mutually exclusive branches) and L (the log rows).
+
+CONVENTIONS THIS FILE FOLLOWS, ALL OF THEM LOAD-BEARING:
+
+  * TWO fixture prefixes, not one, and the second one exists because of 506's own branch rule. MDPROBE0506% is not
+    identifier-shaped -- its third character is a letter -- so a fixture built only on that prefix could never exercise
+    the identifier branch at all. MD9990506% is MD followed by digits, which is the shape a real handler ID has, and it
+    is unmistakably a probe value. The reset and the cleanup cover BOTH.
+  * SOFT DELETE ONLY. There is no hard delete anywhere in this database, so cleanup sets IsDeleted = 1 and the fixture
+    rows stay. The reset at the top retires anything a previous run left visible, which is what makes this file
+    re-runnable.
+  * REFUSALS use plain EXEC and successes use INSERT ... EXEC. That is not stylistic: INSERT ... EXEC opens a
+    transaction, and a procedure that throws inside one leaves the transaction doomed (error 3930), so the CATCH cannot
+    write its log row and the section L assertions would measure nothing.
+  * INSERT ... EXEC IS ITSELF AN ASSERTION. #Search names all 21 columns in the procedure's order, so a change to the
+    projection's list, order or types fails the insert rather than passing silently. It also succeeds on an EMPTY result
+    set and fails on a MISSING one, which a row count cannot tell apart -- and that distinction is the whole point of
+    every zero-row case in section W.
+  * HandlerSourceId IS AN IDENTITY, SO THE IDS ARE CAPTURED, NOT LOOKED UP. #Ids holds one row per fixture row, each
+    taken from SCOPE_IDENTITY () immediately after its INSERT. Looking them up afterwards by natural key is the obvious
+    alternative and it is wrong: soft-deleted rows from earlier runs share the key. Temp tables survive across GO on one
+    connection; local variables do not.
+  * ORDER is asserted with STRING_AGG over Ordinal, against a hand-computed expected string. The expectations are
+    derived from the fixture table below by hand rather than by re-running 506's own predicate, so a wrong answer cannot
+    agree with itself. Fixture names begin with distinct letters (A, B, C, D, E, P, Z) precisely so that the name
+    tiebreaker's expected order cannot turn on a collation subtlety.
+  * THE LOG ASSERTIONS ARE RELATIVE TO A BASELINE. logs.ExecutionLog is append-only and cleanup does not touch it, so a
+    second run of this file would double any absolute count. #Base holds the highest ExecutionLogId that existed before
+    section A, and every count in section L is taken above it.
+  * PRINT NEVER CONTAINS A SUBQUERY. PRINT CONCAT (..., (SELECT ...)) is error 1046, and it is a COMPILE error, so it
+    takes its whole batch down with it -- including the CREATE TABLE above it. Every count is hoisted into a variable
+    first.
+
+WHAT THE FIXTURE IS. Eleven rows: eight visible, three that must never appear.
+
+  Label  HandlerId      Cur   Del  HandlerName               SiteLocationCity   What it is for
+  X3     MDPROBE05063   1     0    EPSILON PLAIN CO          Rockville          matched only by an id substring
+  X4     MDPROBE05064   1     0    ZZQUARTZ PLATING CO       Baltimore          MatchRank 4, name prefix
+  X5     MDPROBE05065   1     0    BETA ZZQUARTZ WORKS       Frederick          MatchRank 5, name contains
+  X6     MDPROBE05066   1     0    CITY MATCH ONLY CO        ZZQUARTZTOWN       MatchRank 6, city prefix
+  X7     MDPROBE05067   1     0    DOWNTOWN MATCH CO         WEST ZZQUARTZ      MatchRank 7, city contains
+  X8     MDPROBE05068   1     0    AB1SOLVENTS INC           Cumberland         the id-shaped-term COST, section R7
+  I1     MD9990506001   1     0    PLAIN ID ONE              Annapolis          MatchRank 1, exact id
+  I2     MD9990506002   1     0    PLAIN ID TWO              Salisbury          MatchRank 2, id prefix
+  E1     MDPROBE05069   1     1    ZZQUARTZ HIDDEN DELETED   Baltimore          soft-deleted
+  E2     MDPROBE0506A   0     0    ZZQUARTZ HIDDEN OLD       Baltimore          superseded version
+  E3     MDPROBE0506B   NULL  0    ZZQUARTZ HIDDEN NULLCUR   Baltimore          never stamped by the reconcile pass
+
+THE THREE HIDDEN ROWS ALL CARRY ZZQUARTZ IN THE NAME ON PURPOSE. They are the three separate ways dbo.vwHandlerSource
+excludes a row, and each is a row the search WOULD find if 506 read the base table or restated the filter wrongly. E3 in
+particular: `CurrentRecord = 1` excludes NULL, which is easy to get wrong when reading the view.
+
+THE TWO SEARCH TERMS THE WHOLE FILE TURNS ON:
+
+  N'ZZQUARTZ'  -- text branch. Matches X4, X5, X6, X7 and nothing else, at MatchRank 4, 5, 6 and 7 respectively. One
+                  term, four ranks, one row each, so the rank assertion cannot pass by accident.
+  N'ROBE0506'  -- text branch, and it is a substring of every MDPROBE0506% id. Matches X3 to X8 -- six rows, all at
+                  MatchRank 3 -- and NOT I1 or I2, whose ids are MD999.... Six rows at one rank is what makes the name
+                  tiebreaker and the paging assertions meaningful.
+
+Neither term is identifier-shaped: ZZQUARTZ's third character is Q and ROBE0506's is B, and 506 requires a digit there.
+That is deliberate -- it means both terms exercise the three-column contains-scan.
+
+WHAT THIS PROBE CANNOT ASSERT, STATED HERE BECAUSE EACH ONE MATTERS:
+
+  1. THE @Take UPPER CLAMP. @Take is clamped to 1..100 and the fixture's widest result is six rows, so a call asking for
+     1000 cannot be told from a call asking for 100. The lower clamp IS observable (P4, P5) and the upper one is
+     asserted by reading the file. Building a 101-row fixture to prove it would mean 101 rows of real-looking handler
+     data in dbo.HandlerSource, permanently, because there is no hard delete.
+  2. A LOGGED FAILURE CARRYING A LONG TERM. Every failure 506 can record happens at the length gate, where the term is
+     0 or 1 characters by definition -- a longer term either succeeds, and successful reads write no log row at all, or
+     fails inside a caller-owned transaction, where error 3930 makes logging impossible (X1). So L4 asserts the term is
+     absent from the log on the paths that DO log, and build/check_search_term_privacy.py is what covers the rest, by
+     reading the module rather than running it. The two are not redundant and neither is sufficient alone.
+  3. A BARE EXEC. @SearchTerm is REQUIRED, so a call with no arguments fails with error 201 before the body executes and
+     nothing is logged. A0 asserts the error and A0b asserts the log is unchanged, rather than pretending otherwise.
+
+A CLEAN RUN IS: 42 PASS, no FAIL, no CHANGED, no Msg line, and exactly one warning -- X1's. The cleanup line reports 10
+retired rows rather than 11, because E1 was inserted already soft-deleted and the reset only touches visible rows.
+Verified twice in a row, with identical output, on 2026-09-05.
+***********************************************************************************************************************/
+
+SET NOCOUNT ON;
+SET XACT_ABORT OFF;   -- the refusal sections need the batch to continue after a caught error
+GO
+
+PRINT N'=== da4_searchhandlersource: dbo.uspSearchHandlerSource ===';
+GO
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Reset. Retire anything a previous run left visible, under BOTH prefixes. Soft delete only.
+-- ---------------------------------------------------------------------------------------------------------------------
+UPDATE dbo.HandlerSource
+   SET IsDeleted             = 1
+     , auditDeletedBy        = ORIGINAL_LOGIN ()
+     , auditDeletedDateUtc   = SYSUTCDATETIME ()
+     , auditModifiedBy       = ORIGINAL_LOGIN ()
+     , auditModifiedDateUtc  = SYSUTCDATETIME ()
+ WHERE (HandlerId LIKE N'MDPROBE0506%' OR HandlerId LIKE N'MD9990506%')
+   AND IsDeleted = 0;
+PRINT CONCAT (N'reset: retired ', @@ROWCOUNT, N' leftover fixture row(s).');
+GO
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Fixture. One batch, because SCOPE_IDENTITY () has to be read immediately after each INSERT.
+-- ---------------------------------------------------------------------------------------------------------------------
+CREATE TABLE #Ids (Label NVARCHAR (4) NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL);
+GO
+
+-- X3. Matched by an id substring only: nothing in its name or city contains ZZQUARTZ.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE05063', N'MD', N'A', 1, 1, 0, N'Notification', 30, N'EPSILON PLAIN CO', '2024-02-01', '2026-02-01'
+      , N'3 Epsilon St', N'Rockville', N'MD', N'20850', N'Montgomery', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'X3', CAST (SCOPE_IDENTITY () AS INT));
+
+-- X4. MatchRank 4: the term is a PREFIX of the name.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE05064', N'MD', N'A', 1, 1, 0, N'Notification', 30, N'ZZQUARTZ PLATING CO', '2024-03-01', '2026-03-01'
+      , N'4 Quartz Rd', N'Baltimore', N'MD', N'21201', N'Baltimore City', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'X4', CAST (SCOPE_IDENTITY () AS INT));
+
+-- X5. MatchRank 5: the term is INSIDE the name but not at its start.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE05065', N'MD', N'B', 1, 1, 0, N'Part A', 20, N'BETA ZZQUARTZ WORKS', '2024-04-01', '2026-04-01'
+      , N'5 Beta Blvd', N'Frederick', N'MD', N'21701', N'Frederick', N'2', N'SQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'X5', CAST (SCOPE_IDENTITY () AS INT));
+
+-- X6. MatchRank 6: nothing matches on id or name, and the term is a PREFIX of the city.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE05066', N'MD', N'C', 1, 1, 0, N'Permit', 10, N'CITY MATCH ONLY CO', '2024-05-01', '2026-05-01'
+      , N'6 Sixth St', N'ZZQUARTZTOWN', N'MD', N'21601', N'Talbot', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'X6', CAST (SCOPE_IDENTITY () AS INT));
+
+-- X7. MatchRank 7, the ELSE: the term is inside the city but not at its start.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE05067', N'MD', N'A', 2, 1, 0, N'Notification', 30, N'DOWNTOWN MATCH CO', '2024-06-01', '2026-06-01'
+      , N'7 Seventh St', N'WEST ZZQUARTZ', N'MD', N'21801', N'Wicomico', N'3', N'VSQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'X7', CAST (SCOPE_IDENTITY () AS INT));
+
+-- X8. THE DOCUMENTED COST OF THE IDENTIFIER RULE, and the only reason this row exists. Its NAME is identifier-shaped
+-- (letters and digits, two letters then a digit), so searching for it takes the identifier branch, which looks only at
+-- HandlerId -- and finds nothing. Section R7 asserts that, because it is a real behaviour MDE may want changed and a
+-- silent surprise is worse than a documented one.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE05068', N'MD', N'A', 1, 1, 0, N'Notification', 30, N'AB1SOLVENTS INC', '2024-07-01', '2026-07-01'
+      , N'8 Eighth St', N'Cumberland', N'MD', N'21502', N'Allegany', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'X8', CAST (SCOPE_IDENTITY () AS INT));
+
+-- I1. MatchRank 1: an exact handler id. Its name is deliberately PLAIN -- a name containing ZZQUARTZ here would add a
+-- second row to every section R assertion and make the one-row-per-rank property go away.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MD9990506001', N'MD', N'A', 1, 1, 0, N'Notification', 30, N'PLAIN ID ONE', '2024-08-01', '2026-08-01'
+      , N'1 Ninth St', N'Annapolis', N'MD', N'21401', N'Anne Arundel', N'2', N'SQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'I1', CAST (SCOPE_IDENTITY () AS INT));
+
+-- I2. MatchRank 2: reachable only by an id PREFIX shared with I1.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MD9990506002', N'MD', N'B', 1, 1, 0, N'Part A', 20, N'PLAIN ID TWO', '2024-09-01', '2026-09-01'
+      , N'2 Tenth St', N'Salisbury', N'MD', N'21801', N'Wicomico', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'I2', CAST (SCOPE_IDENTITY () AS INT));
+
+-- E1, E2, E3. The three exclusions, all named so the search would find them if the view failed to hide them.
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE05069', N'MD', N'A', 1, 1, 1, N'Notification', 30, N'ZZQUARTZ HIDDEN DELETED', '2024-10-01'
+      , '2026-10-01', N'9 Gone St', N'Baltimore', N'MD', N'21201', N'Baltimore City', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'E1', CAST (SCOPE_IDENTITY () AS INT));
+
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE0506A', N'MD', N'A', 1, 0, 0, N'Notification', 30, N'ZZQUARTZ HIDDEN OLD', '2024-11-01'
+      , '2026-11-01', N'10 Old St', N'Baltimore', N'MD', N'21201', N'Baltimore City', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'E2', CAST (SCOPE_IDENTITY () AS INT));
+
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted, SourceTypeDescription
+   , SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationAddress1, SiteLocationCity
+   , SiteLocationStateCode, SiteLocationZip, SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription)
+VALUES (N'MDPROBE0506B', N'MD', N'A', 1, NULL, 0, N'Notification', 30, N'ZZQUARTZ HIDDEN NULLCUR', '2024-12-01'
+      , '2026-12-01', N'11 Unstamped St', N'Baltimore', N'MD', N'21201', N'Baltimore City', N'1', N'LQG');
+INSERT INTO #Ids (Label, HandlerSourceId) VALUES (N'E3', CAST (SCOPE_IDENTITY () AS INT));
+GO
+
+DECLARE @Fixture INT = (SELECT COUNT (*) FROM #Ids);
+IF @Fixture = 11 PRINT N'fixture: 11 row(s) inserted, ids captured from SCOPE_IDENTITY ().';
+ELSE             PRINT CONCAT (N'FAIL fixture: expected 11 row(s), captured ', @Fixture);
+GO
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- The shape assertion. All 21 columns, in 506's order, with the view's exact types. Every INSERT ... EXEC below asserts
+-- this shape, so a reordered or retyped projection fails here rather than passing quietly.
+--
+-- MatchField is NVARCHAR (16) because that is what 506's CASE produces -- N'SiteLocationCity' is its longest branch.
+-- ---------------------------------------------------------------------------------------------------------------------
+CREATE TABLE #Search
+(
+    Ordinal                                  INT            NOT NULL PRIMARY KEY
+  , HandlerSourceId                          INT            NOT NULL
+  , HandlerId                                NVARCHAR (12)  NOT NULL
+  , ActivityLocation                         NVARCHAR (2)   NOT NULL
+  , SourceType                               NVARCHAR (1)   NOT NULL
+  , SourceTypeDescription                    NVARCHAR (255) NULL
+  , Sequence                                 INT            NOT NULL
+  , ReceivedDate                             DATE           NULL
+  , HandlerName                              NVARCHAR (80)  NULL
+  , SiteLocationAddress1                     NVARCHAR (50)  NULL
+  , SiteLocationCity                         NVARCHAR (25)  NULL
+  , SiteLocationStateCode                    NVARCHAR (2)   NULL
+  , SiteLocationZip                          NVARCHAR (14)  NULL
+  , SiteLocationCountyDescription            NVARCHAR (255) NULL
+  , WasteFederalGeneratorCategoryCode        NVARCHAR (1)   NULL
+  , WasteFederalGeneratorCategoryDescription NVARCHAR (255) NULL
+  , SrcUpdatedDate                           DATE           NULL
+  , auditModifiedDateUtc                     DATETIME2      NOT NULL
+  , MatchRank                                TINYINT        NOT NULL
+  , MatchField                               NVARCHAR (16)  NOT NULL
+  , TotalRows                                INT            NOT NULL
+);
+GO
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- The log baseline. Every count in section L is taken above this id, so a second run asserts the same things rather
+-- than twice as many.
+-- ---------------------------------------------------------------------------------------------------------------------
+CREATE TABLE #Base (Label NVARCHAR (20) NOT NULL PRIMARY KEY, Value BIGINT NOT NULL);
+INSERT INTO #Base (Label, Value)
+SELECT N'MaxLogId', COALESCE (MAX (l.ExecutionLogId), 0) FROM logs.ExecutionLog AS l;
+GO
+DECLARE @Mark BIGINT = (SELECT Value FROM #Base WHERE Label = N'MaxLogId');
+PRINT CONCAT (N'baseline: logs.ExecutionLog high-water mark ', @Mark);
+GO
+
+PRINT N'';
+PRINT N'--- A. Refusals, and the one that cannot be recorded -----------------------------------------------------------';
+GO
+
+-- A0. NO ARGUMENTS. Error 201, raised by the SERVER before the body executes. Plain EXEC: there is nothing to insert.
+BEGIN TRY
+    EXEC dbo.uspSearchHandlerSource;
+    PRINT N'FAIL A0: a bare EXEC returned instead of failing -- @SearchTerm has acquired a default.';
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER () = 201 AND ERROR_MESSAGE () LIKE N'%@SearchTerm%'
+        PRINT N'PASS A0: a bare EXEC fails with error 201 naming @SearchTerm, before the body runs.';
+    ELSE
+        PRINT CONCAT (N'FAIL A0: expected error 201 naming @SearchTerm, got ', ERROR_NUMBER (), N' -- '
+                    , ERROR_MESSAGE ());
+END CATCH;
+GO
+
+-- A0b. THE LIMIT, ASSERTED RATHER THAN GLOSSED. Error 201 happens before the TRY/CATCH exists, so A0 wrote no log row.
+-- MDE's requirement is that any error is recorded, and this is the one case in this procedure where that is impossible
+-- from inside it. Written to print CHANGED rather than PASS if it ever stops being true, because that would be good news
+-- needing a header update rather than a failure.
+DECLARE @Written INT;
+SELECT @Written = COUNT (*)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND l.ProcedureName = N'[dbo].[uspSearchHandlerSource]';
+IF @Written = 0
+    PRINT N'PASS A0b: error 201 wrote NO log row, which is the documented limit of a required parameter.';
+ELSE
+    PRINT CONCAT (N'CHANGED A0b: error 201 now writes ', @Written, N' log row(s). Update 506''s header -- the '
+                , N'"one failure it cannot record" is no longer true.');
+GO
+
+-- A1. NULL passed EXPLICITLY. This one DOES reach the body, so it is refused and recorded.
+BEGIN TRY
+    EXEC dbo.uspSearchHandlerSource @SearchTerm = NULL;
+    PRINT N'FAIL A1: @SearchTerm = NULL returned rows instead of throwing.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%@SearchTerm must contain at least 2 characters%'
+        PRINT N'PASS A1: an explicit NULL @SearchTerm is refused by the same gate as a short one.';
+    ELSE
+        PRINT CONCAT (N'FAIL A1: wrong message -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+
+-- A2. ONE CHARACTER. Refused because of what it RETURNS, not what it costs -- measured, a one-character term matched all
+-- 100,000 current rows at the assumed volume and the caller would see an arbitrary 25 of them.
+BEGIN TRY
+    EXEC dbo.uspSearchHandlerSource @SearchTerm = N'Z';
+    PRINT N'FAIL A2: a one-character term returned rows instead of throwing.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%at least 2 characters%'
+       AND ERROR_MESSAGE () LIKE N'%is not an answer%'
+        PRINT N'PASS A2: a one-character term is refused, and the message says why -- an arbitrary page is not an '
+            + N'answer.';
+    ELSE
+        PRINT CONCAT (N'FAIL A2: wrong message -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+
+-- A2b. THE MESSAGE SAYS IT IS NOT QUOTING THE TERM, AND THAT SENTENCE IS THE ASSERTION. A refusal message is the most
+-- natural place for a search term to leak, because "no results for 'x'" is what anybody writes without thinking, and
+-- ERROR_MESSAGE () lands in logs.ExecutionLog.ErrorMessage, which the monitoring web app can read.
+BEGIN TRY
+    EXEC dbo.uspSearchHandlerSource @SearchTerm = N'Z';
+    PRINT N'FAIL A2b: the call returned instead of throwing, so there was no message to inspect.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%deliberately NOT repeated in this message%'
+       AND ERROR_MESSAGE () LIKE N'%logs.ExecutionLog%'
+        PRINT N'PASS A2b: the refusal message states that the term is deliberately not quoted, and names the table that '
+            + N'is the reason.';
+    ELSE
+        PRINT CONCAT (N'FAIL A2b: the refusal message no longer explains why the term is withheld -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+
+-- A3. WHITESPACE ONLY. Falls through the same gate once TRIM has run, which is the point: there is no separate
+-- empty-string branch to keep in step.
+BEGIN TRY
+    EXEC dbo.uspSearchHandlerSource @SearchTerm = N'   ';
+    PRINT N'FAIL A3: a whitespace-only term returned rows instead of throwing.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%at least 2 characters once leading and trailing whitespace is removed%'
+        PRINT N'PASS A3: a whitespace-only term is refused by the length gate after trimming.';
+    ELSE
+        PRINT CONCAT (N'FAIL A3: wrong message -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+
+-- A3b. A TWO-CHARACTER TERM IS NOT REFUSED. The boundary matters: `< 2`, not `<= 2`. It returns nothing here, and
+-- returning nothing is a SUCCESS -- which is exactly what INSERT ... EXEC can tell apart from a throw and a row count
+-- cannot.
+BEGIN TRY
+    DELETE FROM #Search;
+    INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'Q7';
+    PRINT N'PASS A3b: a two-character term is accepted -- the floor is 2, not 3.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'FAIL A3b: a two-character term was refused -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+
+-- A4. TAB, LINE FEED AND CARRIAGE RETURN ARE TRIMMED TOO, not just the space. A term pasted out of a spreadsheet or an
+-- email carries them, and a leading tab would otherwise make every search return nothing at all.
+DECLARE @Rows INT, @Total INT;
+DELETE FROM #Search;
+INSERT INTO #Search
+EXEC dbo.uspSearchHandlerSource @SearchTerm = N'
+ ZZQUARTZ 	 ';
+SELECT @Rows = COUNT (*), @Total = MIN (TotalRows) FROM #Search;
+IF @Rows = 4 AND @Total = 4
+    PRINT N'PASS A4: tab, line feed, carriage return and space are all trimmed -- a pasted term finds its 4 row(s).';
+ELSE
+    PRINT CONCAT (N'FAIL A4: expected 4 row(s) and TotalRows 4, got ', @Rows, N' and '
+                , COALESCE (CAST (@Total AS NVARCHAR (11)), N'(null)'));
+GO
+
+
+PRINT N'';
+PRINT N'--- B. The view does the filtering, and TotalRows is counted independently --------------------------------------';
+GO
+
+-- B1. THE COUNT IS CROSS-CHECKED AGAINST THE VIEW, not against 506's own answer. The predicate here is hand-written from
+-- the fixture table in the header, so a wrong TotalRows cannot agree with itself.
+DECLARE @Expected INT, @Reported INT;
+SELECT @Expected = COUNT (*)
+  FROM dbo.vwHandlerSource AS v
+ WHERE v.HandlerName LIKE N'%ZZQUARTZ%' OR v.SiteLocationCity LIKE N'%ZZQUARTZ%' OR v.HandlerId LIKE N'%ZZQUARTZ%';
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ZZQUARTZ';
+SELECT @Reported = MIN (TotalRows) FROM #Search;
+IF @Expected = 4 AND @Reported = 4
+    PRINT N'PASS B1: TotalRows agrees with an independent count over dbo.vwHandlerSource, and both are 4.';
+ELSE
+    PRINT CONCAT (N'FAIL B1: the view counts ', @Expected, N' matching row(s), 506 reports '
+                , COALESCE (CAST (@Reported AS NVARCHAR (11)), N'(null)'), N'; both should be 4.');
+GO
+
+-- B2. THE THREE EXCLUSIONS, EACH ASSERTED SEPARATELY. All three hidden rows carry ZZQUARTZ in the name, so any one of
+-- them appearing means 506 has stopped reading dbo.vwHandlerSource. E3 is the one worth having: CurrentRecord = 1
+-- excludes NULL, and a hand-written filter reaching for `<> 0` would let it through.
+DECLARE @Leaked INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ZZQUARTZ';
+SELECT @Leaked = COUNT (*)
+  FROM #Search AS s
+ WHERE s.HandlerId IN (N'MDPROBE05069', N'MDPROBE0506A', N'MDPROBE0506B');
+IF @Leaked = 0
+    PRINT N'PASS B2: none of the soft-deleted, superseded or never-stamped row(s) is searchable, and each carries the '
+        + N'term in its name.';
+ELSE
+    PRINT CONCAT (N'FAIL B2: ', @Leaked, N' hidden row(s) came back. 506 is not reading dbo.vwHandlerSource.');
+GO
+
+-- B3. THE PROJECTION WITHHOLDS PII. 503 and 504 exclude contact name, phone, email and the contact address; 506
+-- excludes them from the PREDICATE as well, and #Search's 21 columns are the reason this is worth asserting -- if a
+-- contact column is ever added to the projection, the INSERT ... EXEC above fails and this line never prints. Asserted
+-- explicitly anyway, because a reader of this file should not have to infer it from a column count.
+DECLARE @BadCount INT;
+SELECT @BadCount = COUNT (*)
+  FROM tempdb.sys.columns AS c
+ WHERE c.object_id = OBJECT_ID (N'tempdb..#Search')
+   AND (c.name LIKE N'Contact%' OR c.name LIKE N'%MailingAddress%' OR c.name = N'SrcUpdatedBy'
+        OR c.name LIKE N'Owner%' OR c.name LIKE N'Operator%');
+IF @BadCount = 0
+    PRINT N'PASS B3: no contact, mailing-address, owner/operator or SrcUpdatedBy column is in the search projection.';
+ELSE
+    PRINT CONCAT (N'FAIL B3: ', @BadCount, N' PII-bearing column(s) are now returned by a 500-row-per-click screen.');
+GO
+
+PRINT N'';
+PRINT N'--- R. The seven MatchRank levels, and the two branches that cannot both run ------------------------------------';
+GO
+
+-- R1. FOUR RANKS FROM ONE TERM, ONE ROW EACH. The fixture is built so that ZZQUARTZ matches exactly one row at rank 4,
+-- one at 5, one at 6 and one at 7 -- so this assertion cannot pass by accident the way a count could.
+DECLARE @Shape NVARCHAR (400);
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ZZQUARTZ';
+SELECT @Shape = STRING_AGG (CAST (CONCAT (s.HandlerId, N'/', s.MatchRank, N'/', s.MatchField) AS NVARCHAR (MAX)), N' > ')
+                WITHIN GROUP (ORDER BY s.Ordinal)
+  FROM #Search AS s;
+IF @Shape = N'MDPROBE05064/4/HandlerName > MDPROBE05065/5/HandlerName > MDPROBE05066/6/SiteLocationCity > '
+          + N'MDPROBE05067/7/SiteLocationCity'
+    PRINT N'PASS R1: name prefix, name contains, city prefix and city contains rank 4, 5, 6, 7 in that order, and '
+        + N'MatchField names the column that matched.';
+ELSE
+    PRINT CONCAT (N'FAIL R1: got ', COALESCE (@Shape, N'(no rows)'));
+GO
+
+-- R2. AN EXACT HANDLER ID IS RANK 1, AND THE IDENTIFIER BRANCH IGNORES NAMES AND CITIES ENTIRELY. One row, not two: I2
+-- shares the id's first eleven characters but not all twelve.
+DECLARE @Shape NVARCHAR (400);
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'MD9990506001';
+SELECT @Shape = STRING_AGG (CAST (CONCAT (s.HandlerId, N'/', s.MatchRank, N'/', s.MatchField) AS NVARCHAR (MAX)), N' > ')
+                WITHIN GROUP (ORDER BY s.Ordinal)
+  FROM #Search AS s;
+IF @Shape = N'MD9990506001/1/HandlerId'
+    PRINT N'PASS R2: an exact handler id is MatchRank 1 and returns exactly the one row.';
+ELSE
+    PRINT CONCAT (N'FAIL R2: got ', COALESCE (@Shape, N'(no rows)'));
+GO
+
+-- R3. AN ID PREFIX IS RANK 2, AND THIS IS THE ONLY CASE IN THE FILE THAT MEASURES THE NAME TIEBREAKER ON THE IDENTIFIER
+-- BRANCH. Two rows at the same rank: PLAIN ID ONE before PLAIN ID TWO.
+DECLARE @Shape NVARCHAR (400), @Total INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'MD999050600';
+SELECT @Shape = STRING_AGG (CAST (CONCAT (s.HandlerId, N'/', s.MatchRank) AS NVARCHAR (MAX)), N' > ')
+                WITHIN GROUP (ORDER BY s.Ordinal)
+     , @Total = MIN (s.TotalRows)
+  FROM #Search AS s;
+IF @Shape = N'MD9990506001/2 > MD9990506002/2' AND @Total = 2
+    PRINT N'PASS R3: an id prefix is MatchRank 2 for both row(s), ordered by HandlerName, TotalRows 2.';
+ELSE
+    PRINT CONCAT (N'FAIL R3: got ', COALESCE (@Shape, N'(no rows)'), N', TotalRows '
+                , COALESCE (CAST (@Total AS NVARCHAR (11)), N'(null)'));
+GO
+
+-- R4. AN ID SUBSTRING IS RANK 3, WHICH IS REACHABLE ONLY ON THE TEXT BRANCH. ROBE0506 is inside every MDPROBE0506% id
+-- and inside no MD999% one, so this is six rows at one rank -- the case the name tiebreaker has to order, and the
+-- fixture names begin A, B, C, D, E, Z for exactly that reason.
+DECLARE @Shape NVARCHAR (400), @Total INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Take = 100;
+SELECT @Shape = STRING_AGG (CAST (s.HandlerId AS NVARCHAR (MAX)), N' > ') WITHIN GROUP (ORDER BY s.Ordinal)
+     , @Total = MIN (s.TotalRows)
+  FROM #Search AS s;
+IF @Shape = N'MDPROBE05068 > MDPROBE05065 > MDPROBE05066 > MDPROBE05067 > MDPROBE05063 > MDPROBE05064' AND @Total = 6
+    PRINT N'PASS R4: an id substring is MatchRank 3 for all 6 row(s), ordered by HandlerName within the rank.';
+ELSE
+    PRINT CONCAT (N'FAIL R4: got ', COALESCE (@Shape, N'(no rows)'), N', TotalRows '
+                , COALESCE (CAST (@Total AS NVARCHAR (11)), N'(null)'));
+GO
+
+-- R5. EVERY ROW OF THAT RESULT IS RANK 3 AND MatchField HandlerId. Asserted separately from the order, because a CASE
+-- that fell through to the ELSE would still produce the right ROWS in the wrong ranks.
+DECLARE @Wrong INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Take = 100;
+SELECT @Wrong = COUNT (*) FROM #Search AS s WHERE s.MatchRank <> 3 OR s.MatchField <> N'HandlerId';
+IF @Wrong = 0 PRINT N'PASS R5: all 6 row(s) are MatchRank 3 / HandlerId -- the CASE did not fall through to the ELSE.';
+ELSE          PRINT CONCAT (N'FAIL R5: ', @Wrong, N' row(s) carry a rank or field other than 3 / HandlerId.');
+GO
+
+-- R6. THE TWO BRANCHES ARE MUTUALLY EXCLUSIVE, AND THIS IS THE ASSERTION THAT SAYS SO. MD999050600 is identifier-shaped,
+-- so nothing is matched on name or city -- not even X4, whose name would match if the term reached the name column.
+-- Ranks 3 to 7 are unreachable here and ranks 1 and 2 are unreachable in R1, which is what "one OR group survives
+-- compilation" means at the level a probe can see.
+DECLARE @Textish INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'MD999050600', @Take = 100;
+SELECT @Textish = COUNT (*) FROM #Search AS s WHERE s.MatchRank >= 3;
+IF @Textish = 0
+    PRINT N'PASS R6: the identifier branch produced no rank 3-7 row -- name and city were not searched at all.';
+ELSE
+    PRINT CONCAT (N'FAIL R6: ', @Textish, N' row(s) matched on name or city while the identifier branch was active.');
+GO
+
+-- R7. THE DOCUMENTED COST OF THAT RULE, ASSERTED SO IT CANNOT BE FORGOTTEN. X8 is named AB1SOLVENTS INC. Searching for
+-- AB1SOLVENTS is identifier-shaped -- letters and digits, two letters then a digit -- so 506 looks only at HandlerId and
+-- returns NOTHING, even though the name is sitting right there. This is a real behaviour MDE may want changed; it is
+-- CHANGED rather than FAIL because a future 506 that returns the row would be an improvement needing a header update.
+DECLARE @Rows INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'AB1SOLVENTS';
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 0
+    PRINT N'PASS R7: an identifier-shaped term that is really a name fragment returns nothing -- the documented cost of '
+        + N'the branch rule, and the reason MatchField exists for the caller''s caption.';
+ELSE
+    PRINT CONCAT (N'CHANGED R7: an identifier-shaped name fragment now returns ', @Rows, N' row(s). 506''s header '
+                , N'describes this as the cost of the rule -- update it.');
+GO
+
+-- R8. THE TIEBREAKER IS UNIQUE, WHICH IS WHAT MAKES PAGING SAFE. Six rows, six distinct Ordinals, no gaps. Paging over
+-- a non-unique key repeats a row on one page and drops it from another, silently, and only under load.
+DECLARE @Rows INT, @Distinct INT, @Max INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Take = 100;
+SELECT @Rows = COUNT (*), @Distinct = COUNT (DISTINCT Ordinal), @Max = MAX (Ordinal) FROM #Search;
+IF @Rows = 6 AND @Distinct = 6 AND @Max = 6
+    PRINT N'PASS R8: Ordinal is 1..6 with no gap and no repeat.';
+ELSE
+    PRINT CONCAT (N'FAIL R8: ', @Rows, N' row(s), ', @Distinct, N' distinct Ordinal(s), max ', @Max);
+GO
+
+
+PRINT N'';
+PRINT N'--- W. LIKE metacharacters, where a typed % would otherwise match every handler in Maryland ---------------------';
+GO
+
+-- W1. A PERCENT SIGN IS A LITERAL, NOT A WILDCARD. Unescaped, the term ZZ% becomes the pattern %ZZ%% and matches all
+-- four ZZQUARTZ rows; escaped, it means the three characters Z, Z, % and matches nothing. Zero rows here is the whole
+-- assertion, and INSERT ... EXEC is what tells zero rows apart from no result set.
+DECLARE @Rows INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ZZ%';
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 0 PRINT N'PASS W1: a typed % is escaped -- ZZ% matches nothing rather than matching every ZZ row.';
+ELSE         PRINT CONCAT (N'FAIL W1: ZZ% matched ', @Rows, N' row(s). The % is reaching LIKE as a wildcard.');
+GO
+
+-- W2. AN UNDERSCORE IS A LITERAL. Unescaped, Z_QUARTZ matches ZZQUARTZ -- the underscore standing in for the second Z --
+-- which is the subtlest of the four and the one most likely to survive a careless rewrite.
+DECLARE @Rows INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'Z_QUARTZ';
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 0 PRINT N'PASS W2: a typed _ is escaped -- Z_QUARTZ does not match ZZQUARTZ.';
+ELSE         PRINT CONCAT (N'FAIL W2: Z_QUARTZ matched ', @Rows, N' row(s). The _ is reaching LIKE as a wildcard.');
+GO
+
+-- W3. A BRACKET IS A LITERAL. Unescaped, [Z-Z]ZQUARTZ is a character class matching a single Z and the term finds all
+-- four rows; escaped, the class can never be opened. This is also the case that would otherwise raise a pattern error
+-- for an unbalanced bracket, turning a typo into a stack trace.
+DECLARE @Rows INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'[Z-Z]ZQUARTZ';
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 0 PRINT N'PASS W3: a typed [ is escaped -- a character class cannot be opened from the search box.';
+ELSE         PRINT CONCAT (N'FAIL W3: [Z-Z]ZQUARTZ matched ', @Rows, N' row(s). The [ is reaching LIKE unescaped.');
+GO
+
+-- W4. THE ESCAPE CHARACTER ITSELF IS A LITERAL, AND THE FOUR REPLACEMENTS AGREE WITH EACH OTHER. A term containing a
+-- backslash is the one that can produce a pattern the escape rules reject rather than a pattern that matches the wrong
+-- rows, so what is asserted is that it runs at all and matches literally. The second term carries a backslash AND a
+-- percent, which is the combination that a wrong replacement order mangles: escaping % before \ re-escapes the backslash
+-- just inserted, and the typed % comes back as a wildcard.
+--
+-- STATED PLAINLY: a row COUNT cannot separate the two orders here, because both wrong orders produce patterns that
+-- happen to match nothing against this fixture. What this case proves is that the correct order is self-consistent and
+-- raises no error; the argument for the order is in 506's header, and W1 is what proves the escaping works at all.
+DECLARE @RowsA INT, @RowsB INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ZZ\';
+SELECT @RowsA = COUNT (*) FROM #Search;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'Z\%Q';
+SELECT @RowsB = COUNT (*) FROM #Search;
+IF @RowsA = 0 AND @RowsB = 0
+    PRINT N'PASS W4: a backslash, and a backslash together with a percent, are matched literally and raise no escape '
+        + N'error.';
+ELSE
+    PRINT CONCAT (N'FAIL W4: expected 0 and 0 row(s), got ', @RowsA, N' and ', @RowsB);
+GO
+
+-- W5. THE PATTERN VARIABLES HAVE THE HEADROOM ESCAPING NEEDS. A 200-character term of nothing but backslashes escapes to
+-- 400 characters and then to a 402-character contains-pattern, which is exactly what @Escaped and @ContainsPattern are
+-- declared to hold. A narrower declaration would truncate silently and turn a contains-search into a prefix-search, so
+-- the assertion is that this runs at all and returns nothing.
+DECLARE @Rows INT, @Long NVARCHAR (200) = REPLICATE (N'\', 200);
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = @Long;
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 0 AND LEN (@Long) = 200
+    PRINT N'PASS W5: a 200-character all-backslash term escapes to 402 characters without truncation or error.';
+ELSE
+    PRINT CONCAT (N'FAIL W5: expected 0 row(s) from a 200-character term, got ', @Rows);
+GO
+
+-- W6. A TERM WIDER THAN THE WIDEST SEARCHED COLUMN IS NOT REFUSED, AND THAT IS DELIBERATE. HandlerName is 80 characters,
+-- so a 150-character term cannot match anything -- but 80 is a column width in a GENERATED script, and a refusal keyed to
+-- it would go stale in silence the day EPA widens the field. An empty result set is correct at any width.
+DECLARE @Rows INT, @Wide NVARCHAR (200) = REPLICATE (N'ZQ', 75);
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = @Wide;
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 0 PRINT N'PASS W6: a 150-character term returns an empty result set rather than a refusal.';
+ELSE         PRINT CONCAT (N'FAIL W6: a 150-character term matched ', @Rows, N' row(s), which is impossible.');
+GO
+
+-- W7. @SearchTerm IS DECLARED WIDER THAN ITS TARGETS, WHICH IS 504's DEFECT ASSERTED AS A PROPERTY OF 506. Truncation
+-- happens at the CALL boundary, before the body runs and before any validation can see it, so a term padded to more than
+-- the searched columns' width must still arrive whole and still find its rows after trimming.
+DECLARE @Rows INT, @Padded NVARCHAR (200) = REPLICATE (N' ', 150) + N'ZZQUARTZ' + REPLICATE (N' ', 40);
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = @Padded;
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 4
+    PRINT N'PASS W7: a term padded to 198 characters is not truncated at the call boundary -- it trims back to '
+        + N'ZZQUARTZ and finds its 4 row(s).';
+ELSE
+    PRINT CONCAT (N'FAIL W7: expected 4 row(s) from a padded term, got ', @Rows, N'. @SearchTerm is too narrow.');
+GO
+
+PRINT N'';
+PRINT N'--- P. Paging and the clamps ------------------------------------------------------------------------------------';
+GO
+
+-- P1. A PAGE IS A WINDOW OVER THE WHOLE RANKED SET, AND TotalRows IS THE SET, NOT THE PAGE. Two rows back, six counted.
+DECLARE @Shape NVARCHAR (400), @Total INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Take = 2;
+SELECT @Shape = STRING_AGG (CAST (s.HandlerId AS NVARCHAR (MAX)), N' > ') WITHIN GROUP (ORDER BY s.Ordinal)
+     , @Total = MIN (s.TotalRows)
+  FROM #Search AS s;
+IF @Shape = N'MDPROBE05068 > MDPROBE05065' AND @Total = 6
+    PRINT N'PASS P1: @Take = 2 returns the first two of six, and TotalRows is 6 rather than 2.';
+ELSE
+    PRINT CONCAT (N'FAIL P1: got ', COALESCE (@Shape, N'(no rows)'), N', TotalRows '
+                , COALESCE (CAST (@Total AS NVARCHAR (11)), N'(null)'));
+GO
+
+-- P2. THE LAST PAGE. Ordinal continues from where the previous page stopped -- it is the rank position, not the position
+-- within the page, which is what lets a grid number its rows across pages.
+DECLARE @Shape NVARCHAR (400), @Total INT, @MinOrd INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Skip = 4, @Take = 100;
+SELECT @Shape = STRING_AGG (CAST (s.HandlerId AS NVARCHAR (MAX)), N' > ') WITHIN GROUP (ORDER BY s.Ordinal)
+     , @Total = MIN (s.TotalRows), @MinOrd = MIN (s.Ordinal)
+  FROM #Search AS s;
+IF @Shape = N'MDPROBE05063 > MDPROBE05064' AND @Total = 6 AND @MinOrd = 5
+    PRINT N'PASS P2: @Skip = 4 returns row(s) 5 and 6, numbered 5 and 6 rather than 1 and 2.';
+ELSE
+    PRINT CONCAT (N'FAIL P2: got ', COALESCE (@Shape, N'(no rows)'), N', TotalRows '
+                , COALESCE (CAST (@Total AS NVARCHAR (11)), N'(null)'), N', first Ordinal '
+                , COALESCE (CAST (@MinOrd AS NVARCHAR (11)), N'(null)'));
+GO
+
+-- P3. PAGING PAST THE END IS AN EMPTY PAGE, NOT AN ERROR -- and the caller cannot read TotalRows from it, because there
+-- is no row to read it from. 506's header says so rather than inventing a row of NULLs to carry the count.
+DECLARE @Rows INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Skip = 999;
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 0 PRINT N'PASS P3: paging past the end returns an empty result set, and TotalRows is unreadable from it.';
+ELSE         PRINT CONCAT (N'FAIL P3: expected 0 row(s) past the end, got ', @Rows);
+GO
+
+-- P4. @Take = 0 IS CLAMPED TO 1, NOT REFUSED AND NOT HONOURED. A grid that sends 0 gets one row rather than an error or
+-- a silently empty screen.
+DECLARE @Rows INT, @Total INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Take = 0;
+SELECT @Rows = COUNT (*), @Total = MIN (TotalRows) FROM #Search;
+IF @Rows = 1 AND @Total = 6 PRINT N'PASS P4: @Take = 0 is clamped up to 1, and TotalRows still reports all 6.';
+ELSE                        PRINT CONCAT (N'FAIL P4: expected 1 row(s) and TotalRows 6, got ', @Rows, N' and '
+                                        , COALESCE (CAST (@Total AS NVARCHAR (11)), N'(null)'));
+GO
+
+-- P5. NULL PAGING ARGUMENTS FALL BACK TO THE DEFAULTS RATHER THAN PRODUCING NOTHING. COALESCE inside the clamp is what
+-- makes that true: without it, @Skip + @Take is NULL and the paging predicate excludes every row.
+DECLARE @Rows INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Skip = NULL, @Take = NULL;
+SELECT @Rows = COUNT (*) FROM #Search;
+IF @Rows = 6 PRINT N'PASS P5: NULL @Skip and NULL @Take behave as 0 and 25, so all 6 row(s) come back.';
+ELSE         PRINT CONCAT (N'FAIL P5: expected 6 row(s) from NULL paging arguments, got ', @Rows);
+GO
+
+-- P6. A NEGATIVE @Skip IS CLAMPED TO 0. Without the floor, `Ordinal > -5` is true for every row and the page is the whole
+-- set -- which for a real search means the web app accidentally downloading everything.
+DECLARE @Rows INT, @MinOrd INT;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Skip = -5, @Take = 2;
+SELECT @Rows = COUNT (*), @MinOrd = MIN (Ordinal) FROM #Search;
+IF @Rows = 2 AND @MinOrd = 1 PRINT N'PASS P6: a negative @Skip is clamped to 0 rather than widening the page.';
+ELSE                         PRINT CONCAT (N'FAIL P6: expected 2 row(s) starting at Ordinal 1, got ', @Rows
+                                         , N' starting at ', COALESCE (CAST (@MinOrd AS NVARCHAR (11)), N'(null)'));
+GO
+
+-- P7. THE @Skip CEILING EXISTS TO KEEP @Skip + @Take INSIDE INT. Without it this call fails with an arithmetic overflow
+-- the caller cannot act on; with it, it is an ordinary empty page.
+DECLARE @Rows INT;
+BEGIN TRY
+    DELETE FROM #Search;
+    INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ROBE0506', @Skip = 2147483647;
+    SELECT @Rows = COUNT (*) FROM #Search;
+    IF @Rows = 0 PRINT N'PASS P7: @Skip at the INT maximum is clamped, so @Skip + @Take does not overflow.';
+    ELSE         PRINT CONCAT (N'FAIL P7: expected 0 row(s), got ', @Rows);
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'FAIL P7: @Skip at the INT maximum raised an error -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+
+
+PRINT N'';
+PRINT N'--- L. The log rows, and the term that is not in them ----------------------------------------------------------';
+GO
+
+-- L1. EVERY REFUSAL ABOVE WAS RECORDED. A1, A2, A2b and A3 are the four refused calls that reach the body, and MDE's
+-- requirement is that each one leaves a row. A0's error 201 leaves none, by A0b, and X1's leaves none because its
+-- transaction is doomed -- so four is the number, not six. The comparison is >= rather than = so that re-running one
+-- section during development is not a false failure; what matters is that it is not zero.
+DECLARE @Logged INT;
+SELECT @Logged = COUNT (*)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND l.ProcedureName = N'[dbo].[uspSearchHandlerSource]'
+   AND l.Successful = 0;
+IF @Logged >= 4
+    PRINT CONCAT (N'PASS L1: ', @Logged, N' refusal(s) recorded. A read that only SELECTs still records its own '
+                , N'failures.');
+ELSE
+    PRINT CONCAT (N'FAIL L1: expected at least 4 recorded refusal(s), found ', @Logged);
+GO
+
+-- L2. THE ORPHAN SIGNATURE, WHICH IS WHAT AN ERROR-ONLY READ LEAVES BEHIND. There is no start row to update, so
+-- logs.uspRecordExecutionError takes its orphan-insert branch: Successful = 0, EndDateUtc set, ElapsedMilliseconds NULL.
+-- The duration is recovered into ContextMessage as ElapsedMs= instead, which is the only place it can go.
+DECLARE @Orphans INT, @WithMs INT;
+SELECT @Orphans = COUNT (*)
+     , @WithMs   = SUM (CASE WHEN l.ContextMessage LIKE N'%ElapsedMs=%' THEN 1 ELSE 0 END)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND l.ProcedureName = N'[dbo].[uspSearchHandlerSource]'
+   AND l.Successful = 0 AND l.EndDateUtc IS NOT NULL AND l.ElapsedMilliseconds IS NULL;
+IF @Orphans >= 4 AND @Orphans = @WithMs
+    PRINT CONCAT (N'PASS L2: all ', @Orphans, N' row(s) carry the orphan signature and recover the duration as '
+                , N'ElapsedMs= in ContextMessage.');
+ELSE
+    PRINT CONCAT (N'FAIL L2: ', @Orphans, N' orphan row(s), of which ', COALESCE (CAST (@WithMs AS NVARCHAR (11)), N'0')
+                , N' carry ElapsedMs=.');
+GO
+
+-- L3. @KeyParameters CARRIES THE FOUR FACTS AND NOTHING ELSE. Skip, Take, TermLength, IdShaped. TermLength is a count and
+-- IdShaped is a branch indicator, and the term cannot be reconstructed from either -- which is the whole design.
+DECLARE @Rows INT, @Shaped INT;
+SELECT @Rows = COUNT (*)
+     , @Shaped = SUM (CASE WHEN l.KeyParameters LIKE N'%Skip=%' AND l.KeyParameters LIKE N'%Take=%'
+                            AND l.KeyParameters LIKE N'%TermLength=%' AND l.KeyParameters LIKE N'%IdShaped=%'
+                           THEN 1 ELSE 0 END)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND l.ProcedureName = N'[dbo].[uspSearchHandlerSource]';
+IF @Rows > 0 AND @Rows = @Shaped
+    PRINT CONCAT (N'PASS L3: all ', @Rows, N' log row(s) carry Skip, Take, TermLength and IdShaped.');
+ELSE
+    PRINT CONCAT (N'FAIL L3: ', @Rows, N' log row(s), of which ', COALESCE (CAST (@Shaped AS NVARCHAR (11)), N'0')
+                , N' carry the four expected facts.');
+GO
+
+-- L3b. THE NULL CASE RENDERS AS (null) RATHER THAN AS A MISSING VALUE, so a log row for A1 says the caller sent nothing
+-- instead of looking like a caller who sent an empty string. TermLength=(null) is the distinguishing string.
+DECLARE @NullTerm INT;
+SELECT @NullTerm = COUNT (*)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND l.ProcedureName = N'[dbo].[uspSearchHandlerSource]'
+   AND l.KeyParameters LIKE N'%TermLength=(null)%';
+IF @NullTerm >= 1
+    PRINT N'PASS L3b: an explicit NULL term is logged as TermLength=(null), not as an absent or empty value.';
+ELSE
+    PRINT N'FAIL L3b: no log row renders a NULL term as TermLength=(null).';
+GO
+
+-- L4. THE TERM IS NOT IN THE LOG, AND THIS IS THE ASSERTION THE WHOLE PROCEDURE EXISTS TO PROTECT. Every free-text column
+-- is scanned, not just KeyParameters, because ContextMessage and ErrorMessage are the two that get extended when somebody
+-- is debugging and a "no matches for X" message is the most natural leak there is.
+--
+-- ZZQUARTZ, ROBE0506 and AB1SOLVENTS appear nowhere else in this database, so any of them in any of these columns means a
+-- search term has reached a table the monitoring web app can read. WHAT THIS DOES NOT COVER, STATED PLAINLY: the calls
+-- that carried those three terms all SUCCEEDED, and a successful read writes no log row at all (L5) -- so for those terms
+-- this assertion is true partly because there is nothing to be true of. The paths that DO write a row are the length
+-- refusals, where the term is 0 or 1 characters by definition and there is nothing distinctive to scan for. That is the
+-- gap build/check_search_term_privacy.py fills, by reading the module for a @KeyParameters that mentions the term at all.
+-- Neither check is sufficient alone, which is why both exist.
+DECLARE @Leaks INT;
+SELECT @Leaks = COUNT (*)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND (   l.KeyParameters  LIKE N'%ZZQUARTZ%' OR l.KeyParameters  LIKE N'%ROBE0506%'
+        OR l.KeyParameters  LIKE N'%AB1SOLVENTS%'
+        OR l.ContextMessage LIKE N'%ZZQUARTZ%' OR l.ContextMessage LIKE N'%ROBE0506%'
+        OR l.ContextMessage LIKE N'%AB1SOLVENTS%'
+        OR l.ErrorMessage   LIKE N'%ZZQUARTZ%' OR l.ErrorMessage   LIKE N'%ROBE0506%'
+        OR l.ErrorMessage   LIKE N'%AB1SOLVENTS%'
+        OR l.DynamicSql     LIKE N'%ZZQUARTZ%' OR l.DynamicSql     LIKE N'%ROBE0506%'
+        OR l.Comments       LIKE N'%ZZQUARTZ%' OR l.Comments       LIKE N'%ROBE0506%');
+IF @Leaks = 0
+    PRINT N'PASS L4: no search term appears in any free-text column of logs.ExecutionLog. The caller typed a string; '
+        + N'the log records its length.';
+ELSE
+    PRINT CONCAT (N'FAIL L4: ', @Leaks, N' log row(s) contain a search term. Whatever a person typed is now readable '
+                , N'from the monitoring web app.');
+GO
+
+-- L4b. AND NEITHER IS A ROW THE SEARCH RETURNED. The fixture's ids and names are the values a CATCH would reach for if
+-- it tried to say which record failed to load, and 505's header names exactly that temptation.
+DECLARE @Leaks INT;
+SELECT @Leaks = COUNT (*)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND (   l.KeyParameters  LIKE N'%MDPROBE0506%' OR l.KeyParameters  LIKE N'%MD9990506%'
+        OR l.ContextMessage LIKE N'%MDPROBE0506%' OR l.ContextMessage LIKE N'%MD9990506%'
+        OR l.ErrorMessage   LIKE N'%MDPROBE0506%' OR l.ErrorMessage   LIKE N'%MD9990506%');
+IF @Leaks = 0 PRINT N'PASS L4b: no fixture handler id reaches a log column -- nothing read from the view is copied into '
+                  + N'one.';
+ELSE          PRINT CONCAT (N'FAIL L4b: ', @Leaks, N' log row(s) name a handler the search returned.');
+GO
+
+-- L5. NO SUCCESSFUL-PATH ROW, WHICH IS THE ERROR-ONLY POLICY HOLDING WHERE IT MATTERS MOST. Every other read in DA4 makes
+-- this the same assertion for the same reason; here it is also the second line of defence for L4, because a successful
+-- row is the only row a term-carrying call could ever write.
+DECLARE @Successes INT;
+SELECT @Successes = COUNT (*)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > (SELECT Value FROM #Base WHERE Label = N'MaxLogId')
+   AND l.ProcedureName = N'[dbo].[uspSearchHandlerSource]'
+   AND l.Successful = 1;
+IF @Successes = 0
+    PRINT N'PASS L5: no successful-path log row -- a search is not an audit event, and type-ahead would not become one.';
+ELSE
+    PRINT CONCAT (N'FAIL L5: ', @Successes, N' successful-path row(s) written. Every keystroke is now a log entry, and '
+                , N'each one would carry a term.');
+GO
+
+
+PRINT N'';
+PRINT N'--- X. Transactions: what 506 must not touch ------------------------------------------------------------------';
+GO
+
+-- X1. A CALLER-OWNED DOOMED TRANSACTION, WHICH IS THE G37 BOUNDARY. 506 must not roll back a transaction it did not open,
+-- and inside a doomed one error 3930 makes it impossible to write the log row BY ANY MEANS until somebody rolls back. So
+-- this measures the boundary rather than asserting the requirement is met: XACT_STATE () = -1 and ZERO log rows. CHANGED
+-- rather than FAIL if it ever stops being true, because that would be a fixed G37 needing a header update.
+-- logs.uspRecordExecutionError's severity-10 warning naming 3930 is expected here, and here only.
+DECLARE @Before BIGINT = (SELECT COALESCE (MAX (l.ExecutionLogId), 0) FROM logs.ExecutionLog AS l);
+DECLARE @State INT, @After INT;
+BEGIN TRANSACTION;
+BEGIN TRY
+    EXEC dbo.uspSearchHandlerSource @SearchTerm = N'Z';   -- refused, and the THROW dooms the caller's transaction
+END TRY
+BEGIN CATCH
+    SET @State = XACT_STATE ();
+END CATCH;
+IF XACT_STATE () <> 0 ROLLBACK TRANSACTION;   -- the CALLER rolls back what the CALLER opened
+SELECT @After = COUNT (*)
+  FROM logs.ExecutionLog AS l
+ WHERE l.ExecutionLogId > @Before AND l.ProcedureName = N'[dbo].[uspSearchHandlerSource]';
+IF @State = -1 AND @After = 0
+    PRINT N'PASS X1: inside a caller-owned doomed transaction the refusal cannot be recorded (error 3930), and 506 did '
+        + N'not roll back what it did not open. That is the G37 boundary, measured.';
+ELSE IF @State = -1 AND @After > 0
+    PRINT CONCAT (N'CHANGED X1: the refusal was recorded (', @After, N' row(s)) from inside a doomed transaction. G37 '
+                , N'has moved -- update 506''s header and the G37 entry.');
+ELSE
+    PRINT CONCAT (N'FAIL X1: expected XACT_STATE () = -1, got '
+                , COALESCE (CAST (@State AS NVARCHAR (11)), N'(null)'), N' with ', @After, N' log row(s).');
+GO
+
+-- X2. A SUCCESSFUL CALL LEAVES A HEALTHY CALLER TRANSACTION EXACTLY AS IT FOUND IT. No commit, no rollback, no change to
+-- @@TRANCOUNT -- which is the positive half of "a procedure rolls back only what it opened". Committed rather than rolled
+-- back on purpose: this reads and writes nothing, so there is nothing to undo.
+DECLARE @CountBefore INT, @CountAfter INT, @Rows INT;
+SET @CountBefore = @@TRANCOUNT;
+BEGIN TRANSACTION;
+DELETE FROM #Search;
+INSERT INTO #Search EXEC dbo.uspSearchHandlerSource @SearchTerm = N'ZZQUARTZ';
+SELECT @Rows = COUNT (*) FROM #Search;
+SET @CountAfter = @@TRANCOUNT;
+COMMIT TRANSACTION;
+IF @Rows = 4 AND @CountAfter = @CountBefore + 1
+    PRINT N'PASS X2: a successful search inside a caller transaction returns its rows and leaves @@TRANCOUNT untouched.';
+ELSE
+    PRINT CONCAT (N'FAIL X2: ', @Rows, N' row(s), @@TRANCOUNT went from ', @CountBefore, N' to ', @CountAfter);
+GO
+
+
+PRINT N'';
+PRINT N'--- Cleanup. Soft delete only: the fixture rows stay, retired ------------------------------------------------';
+GO
+UPDATE dbo.HandlerSource
+   SET IsDeleted             = 1
+     , auditDeletedBy        = ORIGINAL_LOGIN ()
+     , auditDeletedDateUtc   = SYSUTCDATETIME ()
+     , auditModifiedBy       = ORIGINAL_LOGIN ()
+     , auditModifiedDateUtc  = SYSUTCDATETIME ()
+ WHERE (HandlerId LIKE N'MDPROBE0506%' OR HandlerId LIKE N'MD9990506%')
+   AND IsDeleted = 0;
+PRINT CONCAT (N'cleanup: retired ', @@ROWCOUNT, N' fixture row(s). logs.ExecutionLog is append-only and is left alone.');
+GO
+
+DROP TABLE #Search;
+DROP TABLE #Ids;
+DROP TABLE #Base;
+GO
+PRINT N'=== da4_searchhandlersource: done ===';
+GO

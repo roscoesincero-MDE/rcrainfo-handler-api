@@ -1,0 +1,158 @@
+-- Page counts for the 400,000-row POPULATED case only, to substantiate the width claim in
+-- measure503_sort.probesql. sys.dm_exec_sessions.logical_reads is not refreshed mid-batch, so it
+-- reported a delta of 0 there; STATISTICS IO reports per-table reads as the statement completes.
+SET NOCOUNT ON;
+SELECT TOP (0) * INTO #H FROM dbo.HandlerSource;
+INSERT INTO #H (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted
+              , SourceTypeDescription, SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate
+              , SiteLocationCity, WasteFederalGeneratorCategoryCode
+              , SiteLocationAddress1, SiteLocationStateCode, SiteLocationStateDescription, SiteLocationZip
+              , SiteLocationCountyDescription, SiteMailingAddressAddress1, NaicsPrimaryDescription
+              , ContactFirstName, ContactLastName, ContactTitle, ContactEmail, ContactAddressAddress1
+              , WasteFederalGeneratorCategoryDescription
+              , auditDeletedBy, auditDeletedDateUtc, auditCreatedBy, auditCreatedDateUtc
+              , auditModifiedBy, auditModifiedDateUtc)
+SELECT N'MD' + RIGHT (N'0000000000' + CAST ((g.value - 1) / 4 + 1 AS NVARCHAR (10)), 10), N'MD', N'H'
+     , (g.value - 1) % 4 + 1, CASE WHEN (g.value - 1) % 4 = 3 THEN 1 ELSE 0 END, 0
+     , N'Handler notification', 1, N'SYNTHETIC HANDLER ' + CAST (g.value AS NVARCHAR (11))
+     , CAST ('2026-01-01' AS DATE), CAST ('2026-01-01' AS DATE), N'Baltimore', N'1'
+     , REPLICATE (N'x', 40), N'MD', N'Maryland', N'21201-1234', N'Baltimore City', REPLICATE (N'x', 40)
+     , REPLICATE (N'x', 40), N'Synthetic', N'Contact', N'Environmental Manager'
+     , N'synthetic.contact@example.invalid', REPLICATE (N'x', 40), N'Large Quantity Generator'
+     , ORIGINAL_LOGIN (), SYSUTCDATETIME (), ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+     , ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+  FROM GENERATE_SERIES (1, 400000) AS g;
+ALTER TABLE #H ADD CONSTRAINT PK_H PRIMARY KEY CLUSTERED (HandlerSourceId);
+CREATE UNIQUE NONCLUSTERED INDEX UX_H_Natural ON #H (HandlerId, SourceType, Sequence) WHERE IsDeleted = 0;
+CREATE NONCLUSTERED INDEX IX_H_Natural_All ON #H (HandlerId, SourceType, Sequence);
+GO
+DECLARE @Page TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL);
+DECLARE @SortBy NVARCHAR (50) = N'HandlerId', @SortDesc BIT = 0, @TotalRows INT, @Skip INT = 0;
+PRINT N'--- ALT as-built, sort HandlerId  (indexable by IX_H_Natural_All) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*) FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1 OPTION (RECOMPILE);
+INSERT INTO @Page (Ordinal, HandlerSourceId)
+SELECT p.Ordinal, p.HandlerSourceId
+  FROM (SELECT ROW_NUMBER () OVER (
+               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                      , h.HandlerSourceId ASC) AS Ordinal
+             , h.HandlerSourceId
+          FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + 50
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO
+DECLARE @Page TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL);
+DECLARE @SortBy NVARCHAR (50) = N'HandlerName', @SortDesc BIT = 0, @TotalRows INT, @Skip INT = 0;
+PRINT N'--- ALT as-built, sort HandlerName (no index anywhere) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*) FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1 OPTION (RECOMPILE);
+INSERT INTO @Page (Ordinal, HandlerSourceId)
+SELECT p.Ordinal, p.HandlerSourceId
+  FROM (SELECT ROW_NUMBER () OVER (
+               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                      , h.HandlerSourceId ASC) AS Ordinal
+             , h.HandlerSourceId
+          FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + 50
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO
+DECLARE @Page TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL);
+DECLARE @SortBy NVARCHAR (50) = N'HandlerId', @SortDesc BIT = 0, @TotalRows INT, @Skip INT = 10000;
+PRINT N'--- ALT as-built, sort HandlerId, deep page Skip=10000 ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*) FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1 OPTION (RECOMPILE);
+INSERT INTO @Page (Ordinal, HandlerSourceId)
+SELECT p.Ordinal, p.HandlerSourceId
+  FROM (SELECT ROW_NUMBER () OVER (
+               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                      , h.HandlerSourceId ASC) AS Ordinal
+             , h.HandlerSourceId
+          FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + 50
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO
+CREATE NONCLUSTERED INDEX IX_H_Grid ON #H (HandlerId)
+    INCLUDE (SourceType, Sequence, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationCity, SourceTypeSortOrder)
+    WHERE IsDeleted = 0 AND CurrentRecord = 1;
+GO
+DECLARE @Page TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL);
+DECLARE @SortBy NVARCHAR (50) = N'HandlerId', @SortDesc BIT = 0, @TotalRows INT, @Skip INT = 0;
+PRINT N'--- ALT +covering, sort HandlerId ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*) FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1 OPTION (RECOMPILE);
+INSERT INTO @Page (Ordinal, HandlerSourceId)
+SELECT p.Ordinal, p.HandlerSourceId
+  FROM (SELECT ROW_NUMBER () OVER (
+               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                      , h.HandlerSourceId ASC) AS Ordinal
+             , h.HandlerSourceId
+          FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + 50
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO
+DECLARE @Page TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL);
+DECLARE @SortBy NVARCHAR (50) = N'HandlerName', @SortDesc BIT = 0, @TotalRows INT, @Skip INT = 0;
+PRINT N'--- ALT +covering, sort HandlerName (covered but not ordered) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*) FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1 OPTION (RECOMPILE);
+INSERT INTO @Page (Ordinal, HandlerSourceId)
+SELECT p.Ordinal, p.HandlerSourceId
+  FROM (SELECT ROW_NUMBER () OVER (
+               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                      , h.HandlerSourceId ASC) AS Ordinal
+             , h.HandlerSourceId
+          FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + 50
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO
+DECLARE @Page TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL);
+DECLARE @SortBy NVARCHAR (50) = N'HandlerId', @SortDesc BIT = 0, @TotalRows INT, @Skip INT = 10000;
+PRINT N'--- ALT +covering, sort HandlerId, deep page Skip=10000 ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*) FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1 OPTION (RECOMPILE);
+INSERT INTO @Page (Ordinal, HandlerSourceId)
+SELECT p.Ordinal, p.HandlerSourceId
+  FROM (SELECT ROW_NUMBER () OVER (
+               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                      , h.HandlerSourceId ASC) AS Ordinal
+             , h.HandlerSourceId
+          FROM #H AS h WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + 50
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO

@@ -1,0 +1,4 @@
+SET NOCOUNT ON;
+SELECT p.name + ' ' + TYPE_NAME(p.user_type_id) + CASE WHEN p.is_output=1 THEN ' OUT' ELSE '' END FROM sys.parameters p WHERE p.object_id=OBJECT_ID('logs.uspCompleteLoadRun') ORDER BY p.parameter_id;
+PRINT '--- types';
+SELECT t.name+'.'+c.name+' '+TYPE_NAME(c.user_type_id)+CASE WHEN TYPE_NAME(c.user_type_id) LIKE 'n%char' THEN '('+CAST(c.max_length/2 AS varchar(9))+')' ELSE '' END+CASE WHEN c.is_nullable=0 THEN ' NOT NULL' ELSE '' END+CASE WHEN c.is_identity=1 THEN ' IDENTITY' ELSE '' END+CASE WHEN d.definition IS NOT NULL THEN ' DF' ELSE '' END FROM sys.columns c JOIN sys.tables t ON t.object_id=c.object_id JOIN sys.schemas s ON s.schema_id=t.schema_id LEFT JOIN sys.default_constraints d ON d.parent_object_id=c.object_id AND d.parent_column_id=c.column_id WHERE s.name='logs' AND t.name IN ('LoadRun','HandlerLoadAttempt','DataQualityObservation') AND c.name NOT LIKE 'audit%' ORDER BY t.name, c.column_id;

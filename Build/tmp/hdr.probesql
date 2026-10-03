@@ -1,0 +1,8 @@
+SET NOCOUNT ON;
+SELECT o.type_desc, obj = CONCAT(s.name, '.', o.name)
+     , HeaderPresent = CASE WHEN OBJECT_DEFINITION(o.object_id) LIKE '%ObjectName:%' THEN 'YES' ELSE 'no' END
+     , FirstLine = LEFT(OBJECT_DEFINITION(o.object_id), 44)
+  FROM sys.objects AS o
+  JOIN sys.schemas AS s ON s.schema_id = o.schema_id
+ WHERE o.type IN ('V','P')
+ ORDER BY o.type_desc, s.name, o.name;

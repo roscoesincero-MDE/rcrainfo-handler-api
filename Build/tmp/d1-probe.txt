@@ -1,0 +1,29 @@
+--- connection refused
+    type      : System.Net.Http.HttpRequestException
+    inner     : System.Net.Sockets.SocketException
+    names ID  : False
+    names KEY : False
+    message   : No connection could be made because the target machine actively refused it. (127.0.0.1:58687)
+    inner msg : No connection could be made because the target machine actively refused it.
+--- unresolvable host
+    type      : System.Net.Http.HttpRequestException
+    inner     : System.Net.Sockets.SocketException
+    names ID  : False
+    names KEY : False
+    message   : No such host is known. (rcranode-does-not-exist.epa.gov.invalid:443)
+    inner msg : No such host is known.
+--- timeout
+    type      : System.Threading.Tasks.TaskCanceledException
+    inner     : System.TimeoutException
+    names ID  : False
+    names KEY : False
+    message   : The request was canceled due to the configured HttpClient.Timeout of 0.4 seconds elapsing.
+    inner msg : The operation was canceled.
+--- 401 response: status 401
+--- EnsureSuccessStatusCode on 401
+    type      : System.Net.Http.HttpRequestException
+    inner     : (none)
+    names ID  : False
+    names KEY : False
+    message   : Response status code does not indicate success: 401 (Unauthorized).
+    RequestMessage.RequestUri names KEY : True

@@ -1,0 +1,225 @@
+@@@ dbo.uspGetHandlerSourcePage
+    public int Ordinal { get; init; }
+    public int HandlerSourceId { get; init; }
+    public string HandlerId { get; init; } = null!;
+    public string ActivityLocation { get; init; } = null!;
+    public string SourceType { get; init; } = null!;
+    public string? SourceTypeDescription { get; init; }
+    public int Sequence { get; init; }
+    public DateOnly? ReceivedDate { get; init; }
+    public string? HandlerName { get; init; }
+    public string? SiteLocationAddress1 { get; init; }
+    public string? SiteLocationCity { get; init; }
+    public string? SiteLocationStateCode { get; init; }
+    public string? SiteLocationZip { get; init; }
+    public string? SiteLocationCountyDescription { get; init; }
+    public string? WasteFederalGeneratorCategoryCode { get; init; }
+    public string? WasteFederalGeneratorCategoryDescription { get; init; }
+    public bool? WasteTsd { get; init; }
+    public bool? WasteTransporter { get; init; }
+    public bool? WasteRecyclerActivity { get; init; }
+    public DateOnly? SrcUpdatedDate { get; init; }
+    public DateTime AuditModifiedDateUtc { get; init; }
+    public int? TotalRows { get; init; }
+@@@ dbo.uspGetHandlerSourceHistoryPage
+    public int Ordinal { get; init; }
+    public int HandlerSourceId { get; init; }
+    public string HandlerId { get; init; } = null!;
+    public string ActivityLocation { get; init; } = null!;
+    public string SourceType { get; init; } = null!;
+    public string? SourceTypeDescription { get; init; }
+    public int Sequence { get; init; }
+    public bool? CurrentRecord { get; init; }
+    public DateOnly? ReceivedDate { get; init; }
+    public string? HandlerName { get; init; }
+    public string? SiteLocationAddress1 { get; init; }
+    public string? SiteLocationCity { get; init; }
+    public string? SiteLocationStateCode { get; init; }
+    public string? SiteLocationZip { get; init; }
+    public string? SiteLocationCountyDescription { get; init; }
+    public string? WasteFederalGeneratorCategoryCode { get; init; }
+    public string? WasteFederalGeneratorCategoryDescription { get; init; }
+    public bool? WasteTsd { get; init; }
+    public bool? WasteTransporter { get; init; }
+    public bool? WasteRecyclerActivity { get; init; }
+    public DateOnly? SrcUpdatedDate { get; init; }
+    public DateTime AuditModifiedDateUtc { get; init; }
+    public int? TotalRows { get; init; }
+@@@ dbo.uspSearchHandlerSource
+    public int Ordinal { get; init; }
+    public int HandlerSourceId { get; init; }
+    public string HandlerId { get; init; } = null!;
+    public string ActivityLocation { get; init; } = null!;
+    public string SourceType { get; init; } = null!;
+    public string? SourceTypeDescription { get; init; }
+    public int Sequence { get; init; }
+    public DateOnly? ReceivedDate { get; init; }
+    public string? HandlerName { get; init; }
+    public string? SiteLocationAddress1 { get; init; }
+    public string? SiteLocationCity { get; init; }
+    public string? SiteLocationStateCode { get; init; }
+    public string? SiteLocationZip { get; init; }
+    public string? SiteLocationCountyDescription { get; init; }
+    public string? WasteFederalGeneratorCategoryCode { get; init; }
+    public string? WasteFederalGeneratorCategoryDescription { get; init; }
+    public DateOnly? SrcUpdatedDate { get; init; }
+    public DateTime AuditModifiedDateUtc { get; init; }
+    public byte MatchRank { get; init; }
+    public string MatchField { get; init; } = null!;
+    public int? TotalRows { get; init; }
+@@@ logs.uspGetLoadRunPage
+    public int LoadRunId { get; init; }
+    public string RunMode { get; init; } = null!;
+    public string ActivityLocation { get; init; } = null!;
+    public DateOnly? RequestedFromDate { get; init; }
+    public DateOnly? RequestedToDate { get; init; }
+    public DateOnly? WatermarkBeforeDate { get; init; }
+    public DateOnly? WatermarkAfterDate { get; init; }
+    public int? OverlapDaysApplied { get; init; }
+    public string Status { get; init; } = null!;
+    public DateTime StartedDateUtc { get; init; }
+    public DateTime? CompletedDateUtc { get; init; }
+    public int? ElapsedSeconds { get; init; }
+    public int? ResumedFromLoadRunId { get; init; }
+    public int LookupListsRefreshed { get; init; }
+    public int SourceRecordsEnumerated { get; init; }
+    public int SourceRecordsFetched { get; init; }
+    public int SourceRecordsInserted { get; init; }
+    public int SourceRecordsUpdated { get; init; }
+    public int SourceRecordsUnchanged { get; init; }
+    public int SourceRecordsSoftDeleted { get; init; }
+    public int SourceRecordsSkipped { get; init; }
+    public int SourceRecordsFailed { get; init; }
+    public int HttpRequestCount { get; init; }
+    public int HttpRetryCount { get; init; }
+    public string? FailureMessage { get; init; }
+    public string InvokedBy { get; init; } = null!;
+    public string? MachineName { get; init; }
+    public int? ProcessId { get; init; }
+    public string? ApplicationVersion { get; init; }
+    public bool IsDeleted { get; init; }
+    public DateTime AuditModifiedDateUtc { get; init; }
+    public int? TotalRows { get; init; }
+@@@ logs.uspGetHandlerLoadStatusPage
+    public int HandlerLoadStatusId { get; init; }
+    public int LoadRunId { get; init; }
+    public string HandlerId { get; init; } = null!;
+    public string ActivityLocation { get; init; } = null!;
+    public string SourceType { get; init; } = null!;
+    public int Sequence { get; init; }
+    public int? HandlerSourceId { get; init; }
+    public string Status { get; init; } = null!;
+    public string? Outcome { get; init; }
+    public int AttemptCount { get; init; }
+    public int? HttpStatusCode { get; init; }
+    public string? ApiErrorCode { get; init; }
+    public string? ApiErrorMessage { get; init; }
+    public string? ApiErrorId { get; init; }
+    public DateTime? ApiErrorDate { get; init; }
+    public string? PayloadSha256 { get; init; }
+    public DateTime FirstSeenDateUtc { get; init; }
+    public DateTime? LastAttemptStartedDateUtc { get; init; }
+    public DateTime? CompletedDateUtc { get; init; }
+    public int? DurationMs { get; init; }
+    public string EtsStatus { get; init; } = null!;
+    public int EtsAttemptCount { get; init; }
+    public string? EtsErrorMessage { get; init; }
+    public DateTime? EtsLastAttemptDateUtc { get; init; }
+    public DateTime? EtsMigratedDateUtc { get; init; }
+    public long? ExecutionLogId { get; init; }
+    public bool IsDeleted { get; init; }
+    public DateTime AuditModifiedDateUtc { get; init; }
+    public int? TotalRows { get; init; }
+@@@ logs.uspGetLoadRunSummary
+    public int LoadRunId { get; init; }
+    public string RunMode { get; init; } = null!;
+    public string ActivityLocation { get; init; } = null!;
+    public DateOnly? RequestedFromDate { get; init; }
+    public DateOnly? RequestedToDate { get; init; }
+    public DateOnly? WatermarkBeforeDate { get; init; }
+    public DateOnly? WatermarkAfterDate { get; init; }
+    public int? OverlapDaysApplied { get; init; }
+    public string Status { get; init; } = null!;
+    public DateTime StartedDateUtc { get; init; }
+    public DateTime? CompletedDateUtc { get; init; }
+    public long? ElapsedMs { get; init; }
+    public int ElapsedIsProvisional { get; init; }
+    public int? ResumedFromLoadRunId { get; init; }
+    public int LookupListsRefreshed { get; init; }
+    public int SourceRecordsEnumerated { get; init; }
+    public int SourceRecordsFetched { get; init; }
+    public int SourceRecordsInserted { get; init; }
+    public int SourceRecordsUpdated { get; init; }
+    public int SourceRecordsUnchanged { get; init; }
+    public int SourceRecordsSoftDeleted { get; init; }
+    public int SourceRecordsSkipped { get; init; }
+    public int SourceRecordsFailed { get; init; }
+    public int HttpRequestCount { get; init; }
+    public int HttpRetryCount { get; init; }
+    public string? FailureMessage { get; init; }
+    public string InvokedBy { get; init; } = null!;
+    public string? MachineName { get; init; }
+    public int? ProcessId { get; init; }
+    public string? ApplicationVersion { get; init; }
+    public bool IsDeleted { get; init; }
+    public DateTime AuditModifiedDateUtc { get; init; }
+    public int? StatusRowCount { get; init; }
+    public int? StatusRowsSoftDeleted { get; init; }
+    public int? StatusPending { get; init; }
+    public int? StatusInProgress { get; init; }
+    public int? StatusSucceeded { get; init; }
+    public int? StatusFailed { get; init; }
+    public int? StatusSkipped { get; init; }
+    public int? OutcomeInserted { get; init; }
+    public int? OutcomeUpdated { get; init; }
+    public int? OutcomeUnchanged { get; init; }
+    public int? OutcomeSoftDeleted { get; init; }
+    public int? OutcomeNotSet { get; init; }
+    public int? DistinctHandlerCount { get; init; }
+    public long? AttemptCountTotal { get; init; }
+    public int? OurFailureCount { get; init; }
+    public int? DurationMeasuredCount { get; init; }
+    public long? TotalDurationMs { get; init; }
+    public int? MaxDurationMs { get; init; }
+    public DateTime? FirstSeenMinDateUtc { get; init; }
+    public DateTime? LastCompletedDateUtc { get; init; }
+    public int? AttemptRowCount { get; init; }
+    public int? AttemptRowsSoftDeleted { get; init; }
+    public int? AttemptSucceeded { get; init; }
+    public int? AttemptFailed { get; init; }
+    public int? AttemptThrottled { get; init; }
+    public int? AttemptTimedOut { get; init; }
+    public int? AttemptCancelled { get; init; }
+    public int? MaxAttemptNumber { get; init; }
+    public long? ResponseBytesTotal { get; init; }
+    public int? Http4xxCount { get; init; }
+    public int? Http5xxCount { get; init; }
+    public int? MaxRetryAfterSeconds { get; init; }
+    public int? ObservationRowCount { get; init; }
+    public int? ObservationRowsSoftDeleted { get; init; }
+    public int? ObservationErrorCount { get; init; }
+    public int? ObservationWarningCount { get; init; }
+    public int? ObservationInfoCount { get; init; }
+    public int? ObservationTypeCount { get; init; }
+    public int? CounterDriftDetected { get; init; }
+@@@ config.uspGetLoadWatermark
+    public int LoadWatermarkId { get; init; }
+    public string FeedName { get; init; } = null!;
+    public string ActivityLocation { get; init; } = null!;
+    public DateOnly? WatermarkDate { get; init; }
+    public int OverlapDays { get; init; }
+    public bool IsEnabled { get; init; }
+    public int? LastAdvancedByLoadRunId { get; init; }
+    public DateTime? LastAdvancedDateUtc { get; init; }
+    public string? Notes { get; init; }
+    public string? RecommendedRunMode { get; init; }
+    public DateOnly? RecommendedFromDate { get; init; }
+    public DateOnly? RecommendedToDate { get; init; }
+    public int? RecommendedOverlapDaysApplied { get; init; }
+    public DateTime AuditModifiedDateUtc { get; init; }
+@@@ dbo.uspMergeHandlerSourceBatch
+    public int HandlerSourceId { get; init; }
+    public string HandlerId { get; init; } = null!;
+    public string SourceType { get; init; } = null!;
+    public int Sequence { get; init; }
+    public string Outcome { get; init; } = null!;

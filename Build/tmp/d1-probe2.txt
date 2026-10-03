@@ -1,0 +1,17 @@
+--- default logging
+    log entries      : 8
+    entries naming the KEY : 2
+      LEAK: [Information] System.Net.Http.HttpClient.auth.LogicalHandler: Start processing HTTP request GET https://rcranodepreprod.epa.gov/rcra-api/rest/api/v1/auth/PROBEAPIID0000000001/PROBEAPIKEY999999999
+      LEAK: [Information] System.Net.Http.HttpClient.auth.ClientHandler: Sending HTTP request GET https://rcranodepreprod.epa.gov/rcra-api/rest/api/v1/auth/PROBEAPIID0000000001/PROBEAPIKEY999999999
+--- RemoveAllLoggers
+    log entries      : 0
+    entries naming the KEY : 0
+--- standard resilience + 503
+    log entries      : 7
+    entries naming the KEY : 0
+      ok: [Debug] Polly: Resilience pipeline executing. Source: 'auth-standard/', Operation Key: '(null)'
+      ok: [Warning] Polly: Execution attempt. Source: 'auth-standard//Standard-Retry', Operation Key: '', Result: '503', Handled: 'True', Attempt: '0', Execution Time: 7.0051ms
+      ok: [Warning] Polly: Resilience event occurred. EventName: 'OnRetry', Source: 'auth-standard//Standard-Retry', Operation Key: '', Result: '503'
+      ok: [Warning] Polly: Execution attempt. Source: 'auth-standard//Standard-Retry', Operation Key: '', Result: '503', Handled: 'True', Attempt: '1', Execution Time: 0.0419ms
+      ok: [Warning] Polly: Resilience event occurred. EventName: 'OnRetry', Source: 'auth-standard//Standard-Retry', Operation Key: '', Result: '503'
+      ok: [Error] Polly: Execution attempt. Source: 'auth-standard//Standard-Retry', Operation Key: '', Result: '503', Handled: 'True', Attempt: '2', Execution Time: 0.0534ms

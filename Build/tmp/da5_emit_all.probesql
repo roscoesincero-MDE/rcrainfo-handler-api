@@ -1,0 +1,30 @@
+SET NOCOUNT ON;
+DECLARE @P TABLE (Ordinal INT IDENTITY (1,1), Name NVARCHAR (200));
+INSERT INTO @P (Name) VALUES
+  (N'dbo.uspGetHandlerSourcePage'), (N'dbo.uspGetHandlerSourceHistoryPage'),
+  (N'dbo.uspSearchHandlerSource'), (N'logs.uspGetLoadRunPage'),
+  (N'logs.uspGetHandlerLoadStatusPage'), (N'logs.uspGetLoadRunSummary'),
+  (N'config.uspGetLoadWatermark'), (N'dbo.uspMergeHandlerSourceBatch');
+DECLARE @i INT = 1, @n INT = (SELECT MAX (Ordinal) FROM @P), @Name NVARCHAR (200), @Sql NVARCHAR (MAX);
+WHILE @i <= @n
+BEGIN
+    SELECT @Name = Name FROM @P WHERE Ordinal = @i;
+    PRINT CONCAT (N'@@@ ', @Name);
+    SELECT @Sql = CONCAT (N'EXEC ', @Name, N' ',
+        ISNULL (STUFF ((SELECT CONCAT (N', ', pa.name, N' = NULL') FROM sys.parameters AS pa
+                        WHERE pa.object_id = OBJECT_ID (@Name) AND pa.is_output = 0
+                        ORDER BY pa.parameter_id FOR XML PATH (N''), TYPE).value (N'.', N'NVARCHAR(MAX)'), 1, 2, N''), N''));
+    SELECT CONCAT (N'    public ',
+        CASE WHEN system_type_name LIKE N'%varchar%' THEN N'string'
+             WHEN system_type_name = N'int' THEN N'int' WHEN system_type_name = N'bigint' THEN N'long'
+             WHEN system_type_name = N'tinyint' THEN N'byte' WHEN system_type_name = N'bit' THEN N'bool'
+             WHEN system_type_name = N'float' THEN N'double' WHEN system_type_name = N'date' THEN N'DateOnly'
+             WHEN system_type_name LIKE N'datetime2%' THEN N'DateTime'
+             ELSE CONCAT (N'/*?', system_type_name, N'*/') END,
+        CASE WHEN is_nullable = 1 OR name = N'TotalRows' THEN N'?' ELSE N'' END, N' ',
+        CASE WHEN name LIKE N'audit%' THEN CONCAT (UPPER (LEFT (name, 1)), SUBSTRING (name, 2, 200)) ELSE name END,
+        N' { get; init; }',
+        CASE WHEN is_nullable = 0 AND system_type_name LIKE N'%varchar%' THEN N' = null!;' ELSE N'' END) AS Line
+    FROM sys.dm_exec_describe_first_result_set (@Sql, NULL, 0) ORDER BY column_ordinal;
+    SET @i += 1;
+END;

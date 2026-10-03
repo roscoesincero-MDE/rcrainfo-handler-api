@@ -1,0 +1,44 @@
+SET NOCOUNT ON;
+
+PRINT N'--- 1. A read that fails must leave a row behind. Bogus feed name -> error 50000. ---';
+DECLARE @Before BIGINT = (SELECT COUNT (*) FROM logs.ExecutionLog
+                           WHERE ProcedureName = N'[config].[uspGetLoadWatermark]');
+
+BEGIN TRY
+    EXEC config.uspGetLoadWatermark @FeedName = N'NoSuchFeed', @ActivityLocation = N'MD';
+    PRINT N'  FAIL: it did not throw.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  caller received error ', ERROR_NUMBER (), N', which is correct.');
+END CATCH;
+
+DECLARE @After BIGINT = (SELECT COUNT (*) FROM logs.ExecutionLog
+                          WHERE ProcedureName = N'[config].[uspGetLoadWatermark]');
+PRINT CONCAT (N'  rows added to logs.ExecutionLog: ', @After - @Before,
+              CASE WHEN @After - @Before = 1 THEN N'  <-- PASS' ELSE N'  <-- FAIL' END);
+
+PRINT N'';
+PRINT N'--- 2. What the recorded row says. ---';
+SELECT TOP (1)
+       ExecutionLogId
+     , ProcedureName
+     , KeyParameters
+     , Successful
+     , ErrorNumber
+     , ErrorProcedure
+     , ReCreatedAfterRollback
+     , LEFT (ErrorMessage, 120)   AS ErrorMessage_first120
+     , LEFT (ContextMessage, 400) AS ContextMessage_first400
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[config].[uspGetLoadWatermark]'
+ ORDER BY ExecutionLogId DESC;
+
+PRINT N'';
+PRINT N'--- 3. The SUCCESSFUL path must still write nothing (DA1 decision 2). ---';
+SET @Before = (SELECT COUNT (*) FROM logs.ExecutionLog
+                WHERE ProcedureName = N'[config].[uspGetLoadWatermark]');
+EXEC config.uspGetLoadWatermark;
+SET @After = (SELECT COUNT (*) FROM logs.ExecutionLog
+               WHERE ProcedureName = N'[config].[uspGetLoadWatermark]');
+PRINT CONCAT (N'  rows added by a successful call: ', @After - @Before,
+              CASE WHEN @After - @Before = 0 THEN N'  <-- PASS' ELSE N'  <-- FAIL' END);

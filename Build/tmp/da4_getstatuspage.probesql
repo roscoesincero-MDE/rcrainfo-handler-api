@@ -1,0 +1,530 @@
+-- Probe for logs.uspGetHandlerLoadStatusPage (script 501).
+--
+-- Every handler used here is a MDPROBE* id that cannot collide with EPA data, and every row this
+-- script creates is SOFT-deleted at the end. Nothing is dropped and nothing is removed.
+--
+-- The result set is captured into a #temp whose column list is written out in full, so the shape of
+-- the projection is asserted rather than assumed: add, remove or reorder a column in the procedure
+-- and INSERT ... EXEC fails outright. RowOrder is an IDENTITY at the END of the table, which makes
+-- it the only insertable-column-order-preserving way to check that the rows arrive in the order the
+-- procedure sorted them -- a temp table has no inherent order and ORDER BY p.Ordinal inside the
+-- procedure would otherwise be untestable from outside.
+--
+-- REFUSALS ARE CALLED WITH A PLAIN EXEC AND SUCCESSES WITH INSERT ... EXEC, and the split is not
+-- cosmetic. INSERT ... EXEC runs inside a transaction, SET XACT_ABORT ON dooms that transaction the
+-- moment the procedure throws, and no log row can be written from a doomed transaction -- error 3930.
+-- Capturing the rows of a call that returns none would therefore mean asserting the recording under
+-- the one condition that makes recording impossible. A refused call returns nothing, so EXEC is all
+-- section A needs, and section B2 goes on to assert the 3930 boundary deliberately.
+--
+-- Run it with sqlcmd -I. QUOTED_IDENTIFIER must be ON for any write to a table carrying a filtered
+-- index, which logs.HandlerLoadStatus does (UX_logs_HandlerLoadStatus_Natural), and sqlcmd defaults it
+-- OFF: without -I the fixture INSERT fails with error 1934 and nothing below it runs.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @R1 INT, @R2 INT, @R3 INT, @n INT, @m INT, @Stamp DATETIME2
+      , @Actual NVARCHAR (400), @Before INT, @After INT;
+
+SET @Stamp = SYSUTCDATETIME ();
+
+----------------------------------------------------------------------------------------------------
+-- Reset. A previous run of this probe leaves MDPROBE0002* rows behind in older runs, and @LatestOnly
+-- reduces across ALL runs -- so a leftover that is still the newest for its source record would
+-- change what section F is supposed to return. Soft-deleted, never removed, which is also the
+-- behaviour every read here has to respect.
+----------------------------------------------------------------------------------------------------
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE HandlerId LIKE N'MDPROBE0002%' AND IsDeleted = 0;
+
+----------------------------------------------------------------------------------------------------
+-- Fixture: three runs, four source records, seven status rows.
+--
+--   MDPROBE00021/N/1   in all three runs. Latest is R3, Succeeded/Unchanged.
+--   MDPROBE00021/N/2   in R1 only, Skipped. Proves @LatestOnly is per SOURCE RECORD, not per handler.
+--   MDPROBE00022/N/1   in R1 (Failed, with EPA's error text) and R2 (Succeeded/Updated).
+--   MDPROBE00023/N/1   in R1 only, Succeeded/Inserted. Control: never touched again.
+----------------------------------------------------------------------------------------------------
+EXEC logs.uspStartLoadRun @RunMode = N'Full', @AllowConcurrent = 1
+                        , @MachineName = N'da4_getstatuspage.probesql'
+                        , @ApplicationVersion = N'probe', @LoadRunId = @R1 OUTPUT;
+EXEC logs.uspCompleteLoadRun @LoadRunId = @R1, @Status = N'PartiallySucceeded';
+
+EXEC logs.uspStartLoadRun @RunMode = N'Incremental', @AllowConcurrent = 1
+                        , @MachineName = N'da4_getstatuspage.probesql'
+                        , @ApplicationVersion = N'probe', @LoadRunId = @R2 OUTPUT;
+EXEC logs.uspCompleteLoadRun @LoadRunId = @R2, @Status = N'Succeeded';
+
+EXEC logs.uspStartLoadRun @RunMode = N'Incremental', @AllowConcurrent = 1
+                        , @MachineName = N'da4_getstatuspage.probesql'
+                        , @ApplicationVersion = N'probe', @LoadRunId = @R3 OUTPUT;
+EXEC logs.uspCompleteLoadRun @LoadRunId = @R3, @Status = N'Succeeded';
+
+PRINT CONCAT (N'Opened LoadRunIds ', @R1, N', ', @R2, N', ', @R3);
+PRINT N'';
+
+INSERT INTO logs.HandlerLoadStatus
+      (LoadRunId, HandlerId, ActivityLocation, SourceType, Sequence, Status, Outcome
+     , AttemptCount, HttpStatusCode, ApiErrorMessage, CompletedDateUtc, DurationMs)
+VALUES (@R1, N'MDPROBE00021', N'MD', N'N', 1, N'Succeeded', N'Updated',  1, 200, NULL, SYSUTCDATETIME (), 120)
+     , (@R1, N'MDPROBE00021', N'MD', N'N', 2, N'Skipped',   NULL,        0, NULL, NULL, NULL, NULL)
+     , (@R1, N'MDPROBE00022', N'MD', N'N', 1, N'Failed',    NULL,        3, 500, N'E_INTERNAL: the source system is unavailable.', NULL, NULL)
+     , (@R1, N'MDPROBE00023', N'MD', N'N', 1, N'Succeeded', N'Inserted', 1, 200, NULL, SYSUTCDATETIME (), 95)
+     , (@R2, N'MDPROBE00021', N'MD', N'N', 1, N'Failed',    NULL,        2, 429, N'E_THROTTLED: too many requests.', NULL, NULL)
+     , (@R2, N'MDPROBE00022', N'MD', N'N', 1, N'Succeeded', N'Updated',  1, 200, NULL, SYSUTCDATETIME (), 143)
+     , (@R3, N'MDPROBE00021', N'MD', N'N', 1, N'Succeeded', N'Unchanged',1, 200, NULL, SYSUTCDATETIME (), 88);
+
+----------------------------------------------------------------------------------------------------
+-- The projection's contract, written out. Twenty-nine columns in the procedure's order.
+----------------------------------------------------------------------------------------------------
+CREATE TABLE #Page
+(
+    HandlerLoadStatusId       INT             NULL,
+    LoadRunId                 INT             NULL,
+    HandlerId                 NVARCHAR (12)   NULL,
+    ActivityLocation          NVARCHAR (2)    NULL,
+    SourceType                NVARCHAR (1)    NULL,
+    Sequence                  INT             NULL,
+    HandlerSourceId           INT             NULL,
+    Status                    NVARCHAR (20)   NULL,
+    Outcome                   NVARCHAR (20)   NULL,
+    AttemptCount              INT             NULL,
+    HttpStatusCode            INT             NULL,
+    ApiErrorCode              NVARCHAR (100)  NULL,
+    ApiErrorMessage           NVARCHAR (4000) NULL,
+    ApiErrorId                NVARCHAR (50)   NULL,
+    ApiErrorDate              DATETIME2       NULL,
+    PayloadSha256             NVARCHAR (64)   NULL,
+    FirstSeenDateUtc          DATETIME2       NULL,
+    LastAttemptStartedDateUtc DATETIME2       NULL,
+    CompletedDateUtc          DATETIME2       NULL,
+    DurationMs                INT             NULL,
+    EtsStatus                 NVARCHAR (20)   NULL,
+    EtsAttemptCount           INT             NULL,
+    EtsErrorMessage           NVARCHAR (4000) NULL,
+    EtsLastAttemptDateUtc     DATETIME2       NULL,
+    EtsMigratedDateUtc        DATETIME2       NULL,
+    ExecutionLogId            BIGINT          NULL,
+    IsDeleted                 BIT             NULL,
+    auditModifiedDateUtc      DATETIME2       NULL,
+    TotalRows                 INT             NULL,
+    RowOrder                  INT IDENTITY (1, 1) NOT NULL
+);
+
+PRINT N'=== A. Refusals, and every one of them recorded ===';
+
+SELECT @Before = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+
+DECLARE @cases TABLE (Ordinal INT IDENTITY (1,1), Label NVARCHAR (100), SortBy NVARCHAR (50)
+                    , UseSortBy BIT, Status NVARCHAR (20), Outcome NVARCHAR (20)
+                    , LatestOnly BIT, UseRun BIT);
+INSERT INTO @cases (Label, SortBy, UseSortBy, Status, Outcome, LatestOnly, UseRun) VALUES
+  (N'null @SortBy',              NULL,              1, NULL,       NULL,        0, 0)
+, (N'unknown @SortBy',           N'FirstSeenDate',  1, NULL,       NULL,        0, 0)
+, (N'@SortBy names a returned but unsortable column', N'DurationMs', 1, NULL, NULL, 0, 0)
+, (N'@Status outside the CHECK set', NULL,          0, N'Faild',   NULL,        0, 0)
+, (N'@Outcome outside the CHECK set', NULL,         0, NULL,       N'Inserted2',0, 0)
+, (N'@LatestOnly with @LoadRunId', NULL,            0, NULL,       NULL,        1, 1);
+
+DECLARE @i INT = 1, @lbl NVARCHAR (100), @sb NVARCHAR (50), @useSb BIT, @st NVARCHAR (20)
+      , @oc NVARCHAR (20), @lo BIT, @useRun BIT, @runArg INT;
+SET @n = (SELECT COUNT (*) FROM @cases);
+WHILE @i <= @n
+BEGIN
+    SELECT @lbl = Label, @sb = SortBy, @useSb = UseSortBy, @st = Status, @oc = Outcome
+         , @lo = LatestOnly, @useRun = UseRun
+      FROM @cases WHERE Ordinal = @i;
+    SET @runArg = CASE WHEN @useRun = 1 THEN @R1 ELSE NULL END;
+    BEGIN TRY
+        -- Plain EXEC, not INSERT ... EXEC. See the note at the top: the latter would doom a
+        -- transaction and make the recording assertion below untestable by construction.
+        IF @useSb = 1
+            EXEC logs.uspGetHandlerLoadStatusPage
+                  @Take = 1, @SortBy = @sb, @Status = @st, @Outcome = @oc
+                , @LatestOnly = @lo, @LoadRunId = @runArg;
+        ELSE
+            EXEC logs.uspGetHandlerLoadStatusPage
+                  @Take = 1, @Status = @st, @Outcome = @oc
+                , @LatestOnly = @lo, @LoadRunId = @runArg;
+        PRINT CONCAT (N'  FAIL  ', @lbl, N' was accepted.');
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT (N'  ok    ', @lbl, N' -> ', LEFT (ERROR_MESSAGE (), 84));
+    END CATCH;
+    SET @i += 1;
+END;
+
+-- [R15]: THE POINT OF THIS SECTION. This procedure writes no successful-path row, so if the CATCH
+-- were dropped the six refusals above would be recorded nowhere and the probe's own output would be
+-- the only trace they ever existed. Each one must be an ORPHAN row: Successful = 0 and
+-- ElapsedMilliseconds NULL, with the duration carried in ContextMessage instead.
+SELECT @After = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+PRINT CONCAT (N'  ExecutionLog rows written by the refusals = ', @After - @Before
+            , CASE WHEN @After - @Before = 6 THEN N'   ok  (all six recorded)' ELSE N'   FAIL  expected 6' END);
+
+SELECT @n = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]'
+   AND Successful = 0
+   AND EndDateUtc IS NOT NULL
+   AND ElapsedMilliseconds IS NULL
+   AND ContextMessage LIKE N'%ElapsedMs=%'
+   AND StartDateUtc >= @Stamp;
+PRINT CONCAT (N'  orphan rows with the duration in ContextMessage = ', @n
+            , CASE WHEN @n = 6 THEN N'   ok  (ElapsedMilliseconds stays NULL, which is what identifies an orphan)'
+                   ELSE N'   FAIL  expected 6' END);
+
+SELECT @n = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]'
+   AND StartDateUtc >= @Stamp
+   AND KeyParameters IS NULL;
+PRINT CONCAT (N'  recorded failures missing KeyParameters = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok  (what the caller sent is on every row)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== A2. G37: inside a transaction the caller doomed, NOTHING can be recorded ===';
+
+-- Asserted rather than discovered. This is the one case where AR8's promise does not hold, and it is
+-- not a defect in this procedure: SET XACT_ABORT ON dooms the caller's transaction on the THROW, and
+-- error 3930 refuses every write to the log until it is rolled back. A writing procedure escapes it by
+-- rolling back the transaction it OWNS; a read owns none. Pinned here so that a future change which
+-- appears to fix it, or which quietly reintroduces the rollback to "make logging work", is visible.
+SELECT @Before = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+
+DECLARE @XactState INT, @Recorded INT;
+
+BEGIN TRANSACTION;
+BEGIN TRY
+    EXEC logs.uspGetHandlerLoadStatusPage @Status = N'Faild';
+END TRY
+BEGIN CATCH
+    -- A SELECT is still permitted in a doomed transaction; only writes are refused. Both values go
+    -- into variables, which are not transactional and so survive the rollback below.
+    SET @XactState = XACT_STATE ();
+    SELECT @Recorded = COUNT (*) - @Before FROM logs.ExecutionLog
+     WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+END CATCH;
+
+-- The caller's transaction, rolled back by the caller. That is the whole point of the correction.
+IF XACT_STATE () <> 0
+BEGIN
+    ROLLBACK TRANSACTION;
+END;
+
+PRINT CONCAT (N'  XACT_STATE inside the CATCH = ', @XactState
+            , CASE WHEN @XactState = -1 THEN N'   ok  (doomed, as XACT_ABORT ON requires)'
+                   ELSE N'   note  not doomed; the rest of this section proves less than intended' END);
+PRINT CONCAT (N'  log rows written while doomed = ', @Recorded
+            , CASE WHEN @Recorded = 0
+                   THEN N'   ok  (error 3930 -- the documented G37 boundary, not a regression)'
+                   ELSE N'   CHANGED  something now CAN record here; G37 may be resolved, update the docs' END);
+
+PRINT N'';
+PRINT N'=== B. The successful path writes NO log row ===';
+
+SELECT @Before = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Take = 500;
+
+SELECT @After = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]';
+PRINT CONCAT (N'  ExecutionLog rows written by a successful page = ', @After - @Before
+            , CASE WHEN @After = @Before THEN N'   ok  (a grid refresh must not log)' ELSE N'   FAIL' END);
+
+SELECT @n = COUNT (*), @m = MIN (TotalRows) FROM #Page;
+PRINT CONCAT (N'  fixture rows = ', @n, N', TotalRows = ', COALESCE (@m, -1)
+            , CASE WHEN @n = 7 AND @m = 7 THEN N'   ok  (TotalRows is the filtered total, on every row)'
+                   ELSE N'   FAIL  expected 7 and 7' END);
+
+SELECT @n = COUNT (*) FROM #Page WHERE TotalRows <> 7;
+PRINT CONCAT (N'  rows disagreeing about TotalRows = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== C. EPA''s error text comes back; our own does not ===';
+
+SELECT @Actual = ApiErrorMessage FROM #Page
+ WHERE HandlerId = N'MDPROBE00022' AND LoadRunId = @R1;
+PRINT CONCAT (N'  ApiErrorMessage = ', LEFT (COALESCE (@Actual, N'(null)'), 60)
+            , CASE WHEN @Actual LIKE N'E_INTERNAL%' THEN N'   ok' ELSE N'   FAIL' END);
+
+SELECT @n = COUNT (*) FROM #Page WHERE EtsStatus = N'NotMigrated' AND EtsAttemptCount = 0;
+PRINT CONCAT (N'  rows carrying the Phase 2 defaults = ', @n
+            , CASE WHEN @n = 7 THEN N'   ok  (returned now so adding them later is not a caller change)'
+                   ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== D. Paging: three pages of three over seven rows, no repeats and no skips ===';
+
+DECLARE @seen TABLE (HandlerLoadStatusId INT, Page INT);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Skip = 0, @Take = 3;
+INSERT INTO @seen SELECT HandlerLoadStatusId, 1 FROM #Page;
+SELECT @n = COUNT (*) FROM #Page;
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Skip = 3, @Take = 3;
+INSERT INTO @seen SELECT HandlerLoadStatusId, 2 FROM #Page;
+SELECT @n += COUNT (*) FROM #Page;
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Skip = 6, @Take = 3;
+INSERT INTO @seen SELECT HandlerLoadStatusId, 3 FROM #Page;
+SELECT @n += COUNT (*) FROM #Page;
+
+SELECT @m = COUNT (DISTINCT HandlerLoadStatusId) FROM @seen;
+PRINT CONCAT (N'  rows across 3 pages = ', @n, N', distinct = ', @m
+            , CASE WHEN @n = 7 AND @m = 7
+                   THEN N'   ok  (every fixture row exactly once -- the tiebreaker is doing its job)'
+                   ELSE N'   FAIL  expected 7 and 7' END);
+
+-- Every fixture row shares one FirstSeenDateUtc, because a set-based upsert stamps the whole batch
+-- with a single SYSUTCDATETIME (). That is precisely the condition under which paging without a
+-- unique tiebreaker repeats and skips, so it is asserted rather than assumed.
+SELECT @n = COUNT (DISTINCT FirstSeenDateUtc) FROM logs.HandlerLoadStatus
+ WHERE HandlerId LIKE N'MDPROBE0002%' AND IsDeleted = 0 AND FirstSeenDateUtc >= @Stamp;
+PRINT CONCAT (N'  distinct FirstSeenDateUtc across the 7 fixture rows = ', @n
+            , CASE WHEN @n = 1 THEN N'   ok  (one instant for the whole batch, so the sort column alone is not unique)'
+                   ELSE N'   note  more than one instant; the tiebreaker assertion above is weaker than intended' END);
+
+PRINT N'';
+PRINT N'=== E. Clamping, including the @Skip ceiling that stops an arithmetic overflow ===';
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Take = 100000;
+SELECT @n = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  @Take = 100000 -> ', @n, N' row(s)'
+            , CASE WHEN @n = 7 THEN N'   ok  (clamped to 500, which is more than the fixture has)' ELSE N'   FAIL' END);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Take = 0;
+SELECT @n = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  @Take = 0 -> ', @n, N' row(s)'
+            , CASE WHEN @n = 1 THEN N'   ok  (floored at 1, not at 0)' ELSE N'   FAIL' END);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Skip = -5, @Take = 2;
+SELECT @n = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  @Skip = -5 -> ', @n, N' row(s)'
+            , CASE WHEN @n = 2 THEN N'   ok  (floored at 0; a negative OFFSET would have errored)' ELSE N'   FAIL' END);
+
+BEGIN TRY
+    DELETE FROM #Page;
+    INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+          @FirstSeenFromUtc = @Stamp, @Skip = 2147483647, @Take = 500;
+    SELECT @n = COUNT (*) FROM #Page;
+    PRINT CONCAT (N'  @Skip = INT max -> ', @n, N' row(s)'
+                , CASE WHEN @n = 0 THEN N'   ok  (clamped to 2000000000, so @Skip + @Take does not overflow)' ELSE N'   FAIL' END);
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  FAIL  @Skip = INT max raised: ', LEFT (ERROR_MESSAGE (), 80));
+END CATCH;
+
+PRINT N'';
+PRINT N'=== F. @LatestOnly reduces to one row per SOURCE RECORD, not per handler ===';
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @LatestOnly = 1, @SortBy = N'HandlerId', @SortDescending = 0
+    , @Take = 500;
+
+SELECT @Actual = STRING_AGG (CONCAT (RIGHT (HandlerId, 3), N'/', Sequence, N'=', Status), N' ')
+                   WITHIN GROUP (ORDER BY RowOrder)
+  FROM #Page;
+PRINT CONCAT (N'  ', COALESCE (@Actual, N'(no rows)')
+            , CASE WHEN @Actual = N'021/1=Succeeded 021/2=Skipped 022/1=Succeeded 023/1=Succeeded'
+                   THEN N'   ok  (4 source records, MDPROBE00021 contributing two)' ELSE N'   FAIL' END);
+
+SELECT @n = LoadRunId FROM #Page WHERE HandlerId = N'MDPROBE00021' AND Sequence = 1;
+PRINT CONCAT (N'  MDPROBE00021/1 came from run ', @n
+            , CASE WHEN @n = @R3 THEN N'   ok  (the newest of its three rows)' ELSE N'   FAIL' END);
+
+-- The question @LatestOnly is FOR: what is currently broken, regardless of which run broke it.
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @LatestOnly = 1, @Status = N'Failed', @Take = 500;
+SELECT @n = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  currently Failed source records = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok  (both failures were superseded by a later success)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== G. A soft-deleted NEWER row must not suppress the visible older one ===';
+
+-- This is the one assertion that justifies repeating the @IncludeDeleted predicate inside the NOT
+-- EXISTS. Retire MDPROBE00021/1's newest row, the way a G7 retention pass would, and the grid must
+-- fall back to R2 rather than showing nothing at all for that source record.
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @R3 AND HandlerId = N'MDPROBE00021' AND SourceType = N'N' AND Sequence = 1;
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @LatestOnly = 1, @HandlerId = N'MDPROBE00021', @Take = 500;
+SELECT @n = COUNT (*) FROM #Page;
+SELECT @m = LoadRunId FROM #Page WHERE Sequence = 1;
+PRINT CONCAT (N'  rows = ', @n, N', MDPROBE00021/1 now from run ', COALESCE (@m, -1)
+            , CASE WHEN @n = 2 AND @m = @R2
+                   THEN N'   ok  (falls back to R2 -- the handler did not vanish)' ELSE N'   FAIL' END);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @LatestOnly = 1, @HandlerId = N'MDPROBE00021'
+    , @IncludeDeleted = 1, @Take = 500;
+SELECT @m = LoadRunId FROM #Page WHERE Sequence = 1 AND IsDeleted = 1;
+PRINT CONCAT (N'  with @IncludeDeleted = 1, the retired row is back, from run ', COALESCE (@m, -1)
+            , CASE WHEN @m = @R3 THEN N'   ok  (and it is marked IsDeleted so the grid can say so)' ELSE N'   FAIL' END);
+
+-- Put it back, so the probe converges and section F would pass again on a re-run.
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 0, auditModifiedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @R3 AND HandlerId = N'MDPROBE00021' AND SourceType = N'N' AND Sequence = 1;
+
+PRINT N'';
+PRINT N'=== H. Sorting, both directions, and the whitelist is case-insensitive ===';
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @SortBy = N'handlerid', @SortDescending = 0, @Take = 500;
+SELECT @Actual = STRING_AGG (RIGHT (HandlerId, 3), N' ') WITHIN GROUP (ORDER BY RowOrder) FROM #Page;
+PRINT CONCAT (N'  ascending by lower-case @SortBy: ', COALESCE (@Actual, N'(none)')
+            , CASE WHEN @Actual = N'021 021 021 021 022 022 023'
+                   THEN N'   ok  (a JavaScript grid''s casing is accepted)' ELSE N'   FAIL' END);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @SortBy = N'HandlerId', @SortDescending = 1, @Take = 500;
+SELECT @Actual = STRING_AGG (RIGHT (HandlerId, 3), N' ') WITHIN GROUP (ORDER BY RowOrder) FROM #Page;
+PRINT CONCAT (N'  descending: ', COALESCE (@Actual, N'(none)')
+            , CASE WHEN @Actual = N'023 022 022 021 021 021 021' THEN N'   ok' ELSE N'   FAIL' END);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @SortBy = N'AttemptCount', @SortDescending = 1, @Take = 1;
+SELECT @n = AttemptCount FROM #Page;
+PRINT CONCAT (N'  most-retried source record first: AttemptCount = ', COALESCE (@n, -1)
+            , CASE WHEN @n = 3 THEN N'   ok' ELSE N'   FAIL' END);
+
+-- Two identical calls must return the same order. Without the surrogate-key tiebreaker the ordering
+-- of tied rows is undefined and the engine is free to change it between two calls.
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Take = 500;
+SELECT @Actual = STRING_AGG (CAST (HandlerLoadStatusId AS NVARCHAR (11)), N' ')
+                   WITHIN GROUP (ORDER BY RowOrder) FROM #Page;
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Take = 500;
+SELECT @n = CASE WHEN @Actual = (SELECT STRING_AGG (CAST (HandlerLoadStatusId AS NVARCHAR (11)), N' ')
+                                        WITHIN GROUP (ORDER BY RowOrder) FROM #Page)
+                 THEN 1 ELSE 0 END;
+PRINT CONCAT (N'  two identical calls agree on the order = ', @n
+            , CASE WHEN @n = 1 THEN N'   ok  (deterministic despite one shared FirstSeenDateUtc)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== I. Filters, and the ones that are deliberately NOT validated ===';
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @LoadRunId = @R1, @Take = 500;
+SELECT @n = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  @LoadRunId = R1 -> ', @n, N' row(s)'
+            , CASE WHEN @n = 4 THEN N'   ok' ELSE N'   FAIL  expected 4' END);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @Status = N'failed', @Take = 500;
+SELECT @n = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  @Status = ''failed'' (lower case) -> ', @n, N' row(s)'
+            , CASE WHEN @n = 2 THEN N'   ok  (accepted: the whitelist compare is collation-based)' ELSE N'   FAIL  expected 2' END);
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @Outcome = N'Unchanged', @Take = 500;
+SELECT @n = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  @Outcome = ''Unchanged'' -> ', @n, N' row(s)'
+            , CASE WHEN @n = 1 THEN N'   ok' ELSE N'   FAIL  expected 1' END);
+
+-- SourceType is EPA's and carries no CHECK constraint, so an unrecognised value must be ACCEPTED and
+-- answer "nothing" rather than be refused. If it were validated, a code EPA started sending next
+-- quarter would be unsearchable on the screen an operator would use to notice it.
+BEGIN TRY
+    DELETE FROM #Page;
+    INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+          @FirstSeenFromUtc = @Stamp, @SourceType = N'Z', @Take = 500;
+    SELECT @n = COUNT (*) FROM #Page;
+    PRINT CONCAT (N'  @SourceType = ''Z'' -> ', @n, N' row(s)'
+                , CASE WHEN @n = 0 THEN N'   ok  (accepted and empty: EPA''s values are not ours to close)' ELSE N'   FAIL' END);
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  FAIL  @SourceType = ''Z'' was refused: ', LEFT (ERROR_MESSAGE (), 80));
+END CATCH;
+
+BEGIN TRY
+    DELETE FROM #Page;
+    INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+          @FirstSeenFromUtc = @Stamp, @ActivityLocation = N'VA', @Take = 500;
+    SELECT @n = COUNT (*) FROM #Page;
+    PRINT CONCAT (N'  @ActivityLocation = ''VA'' -> ', @n, N' row(s)'
+                , CASE WHEN @n = 0 THEN N'   ok  (accepted and empty: no state column here is constrained to MD)' ELSE N'   FAIL' END);
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  FAIL  @ActivityLocation = ''VA'' was refused: ', LEFT (ERROR_MESSAGE (), 80));
+END CATCH;
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenToUtc = @Stamp, @Take = 500;
+SELECT @n = COUNT (*) FROM #Page WHERE HandlerId LIKE N'MDPROBE0002%';
+PRINT CONCAT (N'  @FirstSeenToUtc before the fixture -> ', @n, N' fixture row(s)'
+            , CASE WHEN @n = 0 THEN N'   ok  (the range filter is inclusive of nothing later)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== J. Soft-deleted rows are invisible by default and markable on request ===';
+
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @R1 AND HandlerId = N'MDPROBE00023';
+
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage @FirstSeenFromUtc = @Stamp, @Take = 500;
+SELECT @n = COUNT (*) FROM #Page;
+DELETE FROM #Page;
+INSERT INTO #Page EXEC logs.uspGetHandlerLoadStatusPage
+      @FirstSeenFromUtc = @Stamp, @IncludeDeleted = 1, @Take = 500;
+SELECT @m = COUNT (*) FROM #Page;
+PRINT CONCAT (N'  default = ', @n, N' row(s), @IncludeDeleted = 1 -> ', @m, N' row(s)'
+            , CASE WHEN @n = 6 AND @m = 7 THEN N'   ok' ELSE N'   FAIL  expected 6 and 7' END);
+
+SELECT @n = COUNT (*) FROM #Page WHERE IsDeleted = 1;
+PRINT CONCAT (N'  rows the grid can mark as retired = ', @n
+            , CASE WHEN @n = 1 THEN N'   ok  (IsDeleted is returned, not just filtered on)' ELSE N'   FAIL' END);
+
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 0, auditModifiedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @R1 AND HandlerId = N'MDPROBE00023';
+
+PRINT N'';
+PRINT N'=== K. Nothing the monitor can read carries a credential ===';
+
+-- @KeyParameters on this procedure is paging arguments, filter values and one EPA handler id. The
+-- assertion is narrow on purpose: it is not that a password is absent, it is that nothing here has a
+-- channel that could carry one. A free-text parameter would be that channel, and DA4 adds one to
+-- dbo.uspSearchHandlerSource -- where the term must NOT be logged.
+SELECT @n = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetHandlerLoadStatusPage]'
+   AND StartDateUtc >= @Stamp
+   AND (KeyParameters LIKE N'%password%' OR KeyParameters LIKE N'%apikey%'
+        OR KeyParameters LIKE N'%Bearer %' OR KeyParameters LIKE N'%?%=%');
+PRINT CONCAT (N'  recorded rows whose KeyParameters looks like a credential or a query string = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== Cleanup: soft delete only ===';
+UPDATE logs.HandlerLoadStatus SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE HandlerId LIKE N'MDPROBE0002%' AND IsDeleted = 0;
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId IN (@R1, @R2, @R3) AND IsDeleted = 0;
+DROP TABLE #Page;
+PRINT N'  done.';

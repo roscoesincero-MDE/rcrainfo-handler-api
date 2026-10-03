@@ -1,0 +1,442 @@
+-- Probe for dbo.uspRefreshLookupSet (script 523).
+--
+-- All 24 dbo.Lookup* tables are empty until the loader runs, so this probe owns them outright. Every
+-- code it writes is one EPA does not publish ('Z1', 'ZZZZZZ', 'ZZ9', district 'ZDIST1'), and the
+-- cleanup at the end soft-deletes them -- which is also the behaviour under test, so a re-run finds
+-- its own retired rows and REVIVES them, exactly as it would for a code EPA brought back. That is why
+-- the expected counts below are stable across runs rather than only correct the first time.
+--
+-- Nothing here is dropped, truncated or removed.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @LoadRunId INT, @Rows INT, @Retired INT, @Kids INT
+      , @Stamp DATETIME2, @Stamp2 DATETIME2, @Actual NVARCHAR (400), @Msg NVARCHAR (MAX)
+      , @n INT, @i INT;
+
+EXEC logs.uspStartLoadRun @RunMode = N'Full', @AllowConcurrent = 1
+                        , @MachineName = N'da4_refreshlookup.probesql'
+                        , @ApplicationVersion = N'probe'
+                        , @LoadRunId = @LoadRunId OUTPUT;
+PRINT CONCAT (N'Opened LoadRunId ', @LoadRunId);
+PRINT N'';
+
+----------------------------------------------------------------------------------------------------
+PRINT N'=== A. Refusals. Every one must leave every lookup table exactly as it was ===';
+----------------------------------------------------------------------------------------------------
+DECLARE @BaselineLive INT = (SELECT COUNT (*) FROM dbo.LookupContactType WHERE IsDeleted = 0)
+                          + (SELECT COUNT (*) FROM dbo.LookupHsmReason   WHERE IsDeleted = 0)
+                          + (SELECT COUNT (*) FROM dbo.LookupWasteCode   WHERE IsDeleted = 0)
+                          + (SELECT COUNT (*) FROM dbo.LookupStateDistrict WHERE IsDeleted = 0);
+
+DECLARE @cases TABLE (Ordinal INT IDENTITY (1,1), Label NVARCHAR (100), Lookup NVARCHAR (50)
+                    , Mode NVARCHAR (20), Elements NVARCHAR (MAX), UseRun BIT);
+INSERT INTO @cases (Label, Lookup, Mode, Elements, UseRun) VALUES
+  (N'null LoadRunId',        N'ContactType',   N'Full',   N'[{"activityLocation":"MD","code":"Z1"}]', 0)
+, (N'null @Mode',            N'ContactType',   NULL,      N'[{"activityLocation":"MD","code":"Z1"}]', 1)
+, (N'@Mode = Partial',       N'ContactType',   N'Partial',N'[{"activityLocation":"MD","code":"Z1"}]', 1)
+, (N'null @Elements',        N'ContactType',   N'Full',   NULL, 1)
+, (N'not JSON',              N'ContactType',   N'Full',   N'not json', 1)
+, (N'unknown @LookupName',   N'ContactTypes',  N'Full',   N'[{"activityLocation":"MD","code":"Z1"}]', 1)
+, (N'no code',               N'ContactType',   N'Full',   N'[{"activityLocation":"MD","description":"no code"}]', 1)
+, (N'no activityLocation',   N'ContactType',   N'Full',   N'[{"code":"Z1","description":"no loc"}]', 1)
+, (N'code too wide (2)',     N'ContactType',   N'Full',   N'[{"activityLocation":"MD","code":"ZZZ"}]', 1)
+, (N'activityLocation wide', N'ContactType',   N'Full',   N'[{"activityLocation":"MDX","code":"Z1"}]', 1)
+, (N'description too wide',  N'ContactType',   N'Full',   N'[{"activityLocation":"MD","code":"Z1","description":"' + REPLICATE (N'x', 256) + N'"}]', 1)
+, (N'codeType too wide',     N'WasteCode',     N'Full',   N'[{"activityLocation":"MD","code":"ZZZZZZ","codeType":"12345678901"}]', 1)
+, (N'duplicate key',         N'ContactType',   N'Full',   N'[{"activityLocation":"MD","code":"Z1"},{"activityLocation":"MD","code":"Z1"}]', 1)
+, (N'Full + empty array',    N'ContactType',   N'Full',   N'[]', 1)
+, (N'county code too wide',  N'StateDistrict', N'Full',   N'[{"activityLocation":"MD","code":"ZDIST1","counties":[{"activityLocation":"MD","code":"ZZZZZZ"}]}]', 1)
+, (N'county with no code',   N'StateDistrict', N'Full',   N'[{"activityLocation":"MD","code":"ZDIST1","counties":[{"activityLocation":"MD","description":"nameless"}]}]', 1);
+
+DECLARE @lbl NVARCHAR (100), @lk NVARCHAR (50), @md NVARCHAR (20), @el NVARCHAR (MAX)
+      , @useRun BIT, @runArg INT;
+SELECT @i = 1, @n = (SELECT COUNT (*) FROM @cases);
+WHILE @i <= @n
+BEGIN
+    SELECT @lbl = Label, @lk = Lookup, @md = Mode, @el = Elements, @useRun = UseRun
+      FROM @cases WHERE Ordinal = @i;
+    SET @runArg = CASE WHEN @useRun = 1 THEN @LoadRunId ELSE NULL END;
+    BEGIN TRY
+        EXEC dbo.uspRefreshLookupSet @LoadRunId = @runArg, @LookupName = @lk
+                                   , @Mode = @md, @Elements = @el;
+        PRINT CONCAT (N'  FAIL  ', @lbl, N' was accepted.');
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT (N'  ok    ', LEFT (@lbl + REPLICATE (N' ', 22), 22), N' -> '
+                    , LEFT (ERROR_MESSAGE (), 92));
+    END CATCH;
+    SET @i += 1;
+END;
+
+SELECT @n = (SELECT COUNT (*) FROM dbo.LookupContactType WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupHsmReason   WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupWasteCode   WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupStateDistrict WHERE IsDeleted = 0);
+PRINT CONCAT (N'  live codes before ', @BaselineLive, N', after ', @n
+            , CASE WHEN @n = @BaselineLive
+                   THEN N'   ok  (16 refusals wrote nothing and retired nothing)'
+                   ELSE N'   FAIL  a validation error still changed the mirror' END);
+
+PRINT N'';
+PRINT N'=== B. Full load of a fresh list ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"Z1","description":"Probe contact one","active":true}
+                    ,{"activityLocation":"MD","code":"Z2","description":"Probe contact two","active":true}
+                    ,{"activityLocation":"MD","code":"Z3","description":"Probe contact three","active":false}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT, @ChildRows = @Kids OUTPUT;
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', retired = ', @Retired, N', childRows = ', @Kids
+            , CASE WHEN @Rows = 3 AND @Retired = 0 AND @Kids = 0 THEN N'   ok' ELSE N'   FAIL  expected 3, 0, 0' END);
+
+SELECT @Actual = STRING_AGG (CONCAT (Code, N'=', COALESCE (CAST (Active AS NVARCHAR (1)), N'NULL')), N' ')
+                   WITHIN GROUP (ORDER BY Code)
+  FROM dbo.LookupContactType WHERE ActivityLocation = N'MD' AND Code LIKE N'Z%' AND IsDeleted = 0;
+PRINT CONCAT (N'  Active as stored: ', @Actual
+            , CASE WHEN @Actual = N'Z1=1 Z2=1 Z3=0'
+                   THEN N'   ok  (JSON true/false MAPPED to 1/0, not cast to NULL)'
+                   ELSE N'   FAIL  this is the TRY_CAST(N''true'' AS BIT) trap' END);
+
+PRINT N'';
+PRINT N'=== C. A second identical Full writes nothing and moves no audit stamp ===';
+SELECT @Stamp = MAX (auditModifiedDateUtc) FROM dbo.LookupContactType
+ WHERE ActivityLocation = N'MD' AND Code LIKE N'Z%';
+WAITFOR DELAY '00:00:00.050';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"Z1","description":"Probe contact one","active":true}
+                    ,{"activityLocation":"MD","code":"Z2","description":"Probe contact two","active":true}
+                    ,{"activityLocation":"MD","code":"Z3","description":"Probe contact three","active":false}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+SELECT @Stamp2 = MAX (auditModifiedDateUtc) FROM dbo.LookupContactType
+ WHERE ActivityLocation = N'MD' AND Code LIKE N'Z%';
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', retired = ', @Retired
+            , N', auditModifiedDateUtc moved = ', CASE WHEN @Stamp2 > @Stamp THEN N'YES' ELSE N'no' END
+            , CASE WHEN @Rows = 0 AND @Retired = 0 AND @Stamp2 = @Stamp
+                   THEN N'   ok  (converged; the column still means "this code changed")'
+                   ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== D. Full without Z3: it is RETIRED, not removed, and the survivors are untouched ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"Z1","description":"Probe contact one","active":true}
+                    ,{"activityLocation":"MD","code":"Z2","description":"Probe contact two","active":true}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+-- Z1..Z3 only. Z4 arrives in section F, so on a SECOND run of this probe it is already present here as
+-- a retired row -- which is the revival path working, not a finding, and it does not belong in this
+-- assertion's expected string.
+SELECT @Actual = STRING_AGG (CONCAT (Code, N'=', CASE WHEN IsDeleted = 1 THEN N'retired' ELSE N'live' END), N' ')
+                   WITHIN GROUP (ORDER BY Code)
+  FROM dbo.LookupContactType WHERE ActivityLocation = N'MD' AND Code IN (N'Z1', N'Z2', N'Z3');
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', retired = ', @Retired, N' -> ', @Actual
+            , CASE WHEN @Rows = 0 AND @Retired = 1 AND @Actual = N'Z1=live Z2=live Z3=retired'
+                   THEN N'   ok  (the row is still there, so the code still RESOLVES)' ELSE N'   FAIL' END);
+
+SELECT @Stamp2 = MAX (auditModifiedDateUtc) FROM dbo.LookupContactType
+ WHERE ActivityLocation = N'MD' AND Code IN (N'Z1', N'Z2');
+PRINT CONCAT (N'  survivors'' auditModifiedDateUtc moved = ', CASE WHEN @Stamp2 > @Stamp THEN N'YES' ELSE N'no' END
+            , CASE WHEN @Stamp2 = @Stamp THEN N'   ok  (a retirement is not a touch of the whole list)' ELSE N'   FAIL' END);
+
+-- Retiring a code is worth an Info observation: the three states are distinct and an operator reading
+-- "retired" as "inactive" would draw the wrong conclusion.
+SELECT @Actual = CONCAT (Severity, N'/', ObservationType, N' [', ObservedValue, N']')
+  FROM logs.DataQualityObservation
+ WHERE LoadRunId = @LoadRunId AND ObservationType = N'LookupCodesRetired'
+   AND LookupName = N'ContactType' AND IsDeleted = 0;
+PRINT CONCAT (N'  observation: ', COALESCE (@Actual, N'(none)')
+            , CASE WHEN @Actual LIKE N'Info/LookupCodesRetired%' THEN N'   ok' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== E. EPA brings Z3 back: revived in place, not duplicated ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"Z1","description":"Probe contact one","active":true}
+                    ,{"activityLocation":"MD","code":"Z2","description":"Probe contact two","active":true}
+                    ,{"activityLocation":"MD","code":"Z3","description":"Probe contact three","active":false}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+SELECT @n = COUNT (*) FROM dbo.LookupContactType WHERE ActivityLocation = N'MD' AND Code = N'Z3';
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', retired = ', @Retired, N', rows for Z3 = ', @n
+            , CASE WHEN @Rows = 1 AND @Retired = 0 AND @n = 1
+                   THEN N'   ok  (the unfiltered match revived it; a filtered one would have inserted a twin)'
+                   ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== F. Upsert retires nothing ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Upsert'
+    , @Elements = N'[{"activityLocation":"MD","code":"Z4","description":"Probe contact four","active":true}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+SELECT @n = COUNT (*) FROM dbo.LookupContactType
+ WHERE ActivityLocation = N'MD' AND Code LIKE N'Z%' AND IsDeleted = 0;
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', retired = ', @Retired, N', live MD codes = ', @n
+            , CASE WHEN @Rows = 1 AND @Retired = 0 AND @n = 4
+                   THEN N'   ok  (one page of a list cannot retire the rest of it)' ELSE N'   FAIL  expected 1, 0, 4' END);
+
+PRINT N'';
+PRINT N'=== G. Empty array under Upsert is a no-op, not a refusal ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Upsert', @Elements = N'[]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', retired = ', @Retired
+            , CASE WHEN @Rows = 0 AND @Retired = 0 THEN N'   ok  ("no additions" is a legitimate answer)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== H. Retirement is scoped to the activityLocations the payload mentions ===';
+-- Contacts and mailing addresses carry out-of-state values (G2), so a lookup can hold more than MD.
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Upsert'
+    , @Elements = N'[{"activityLocation":"VA","code":"Z1","description":"Probe VA contact","active":true}]'
+    , @RowsAffected = @Rows OUTPUT;
+-- A COMPLETE refresh of MD's list. It says nothing at all about VA.
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"Z1","description":"Probe contact one","active":true}
+                    ,{"activityLocation":"MD","code":"Z2","description":"Probe contact two","active":true}
+                    ,{"activityLocation":"MD","code":"Z3","description":"Probe contact three","active":false}
+                    ,{"activityLocation":"MD","code":"Z4","description":"Probe contact four","active":true}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+SELECT @Actual = CONCAT (N'MD live=', (SELECT COUNT (*) FROM dbo.LookupContactType WHERE ActivityLocation = N'MD' AND Code LIKE N'Z%' AND IsDeleted = 0)
+                       , N' VA live=', (SELECT COUNT (*) FROM dbo.LookupContactType WHERE ActivityLocation = N'VA' AND Code LIKE N'Z%' AND IsDeleted = 0));
+PRINT CONCAT (N'  retired = ', @Retired, N', ', @Actual
+            , CASE WHEN @Retired = 0 AND @Actual = N'MD live=4 VA live=1'
+                   THEN N'   ok  (a refresh of one jurisdiction cannot empty another''s codes)'
+                   ELSE N'   FAIL  the retirement was not scoped to @Location' END);
+
+PRINT N'';
+PRINT N'=== I. The seven lists EPA keys on code alone ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'HsmReason', @Mode = N'Full'
+    , @Elements = N'[{"code":"Y","description":"Probe HSM reason Y"}
+                    ,{"code":"Z","description":"Probe HSM reason Z"}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+PRINT CONCAT (N'  no activityLocation in the payload: rowsWritten = ', @Rows, N', retired = ', @Retired
+            , CASE WHEN @Rows = 2 AND @Retired = 0
+                   THEN N'   ok  (the natural-key check did not demand one)' ELSE N'   FAIL' END);
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'HsmReason', @Mode = N'Full'
+    , @Elements = N'[{"code":"Y","description":"Probe HSM reason Y"}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+SELECT @Actual = STRING_AGG (CONCAT (Code, N'=', CASE WHEN IsDeleted = 1 THEN N'retired' ELSE N'live' END), N' ')
+                   WITHIN GROUP (ORDER BY Code)
+  FROM dbo.LookupHsmReason WHERE Code IN (N'Y', N'Z');
+PRINT CONCAT (N'  retired = ', @Retired, N' -> ', @Actual
+            , CASE WHEN @Retired = 1 AND @Actual = N'Y=live Z=retired'
+                   THEN N'   ok  (retirement works without an @Location join)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== J. The three extra WasteCode columns, including two more JSON booleans ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'WasteCode', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"ZZZZZZ","description":"Probe waste code"
+                     ,"active":true,"brLoadActive":false,"codeType":"Federal","acute":true}]'
+    , @RowsAffected = @Rows OUTPUT;
+SELECT @Actual = CONCAT (N'active=',      COALESCE (CAST (Active       AS NVARCHAR (1)), N'NULL')
+                       , N' brLoad=',     COALESCE (CAST (BrLoadActive AS NVARCHAR (1)), N'NULL')
+                       , N' codeType=',   COALESCE (CodeType, N'NULL')
+                       , N' acute=',      COALESCE (CAST (Acute        AS NVARCHAR (1)), N'NULL'))
+  FROM dbo.LookupWasteCode WHERE ActivityLocation = N'MD' AND Code = N'ZZZZZZ';
+PRINT CONCAT (N'  ', @Actual
+            , CASE WHEN @Actual = N'active=1 brLoad=0 codeType=Federal acute=1'
+                   THEN N'   ok  (all three booleans mapped; none silently NULL)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== K. HandlerSourceType.SortOrder is a BIGINT, and the list has no activityLocation ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'HandlerSourceType', @Mode = N'Full'
+    , @Elements = N'[{"code":"Y","description":"Probe source type Y","sortOrder":30}
+                    ,{"code":"Z","description":"Probe source type Z","sortOrder":9007199254740991}]'
+    , @RowsAffected = @Rows OUTPUT;
+SELECT @Actual = STRING_AGG (CONCAT (Code, N'=', COALESCE (CAST (SortOrder AS NVARCHAR (24)), N'NULL')), N' ')
+                   WITHIN GROUP (ORDER BY Code)
+  FROM dbo.LookupHandlerSourceType WHERE Code IN (N'Y', N'Z') AND IsDeleted = 0;
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', ', @Actual
+            , CASE WHEN @Rows = 2 AND @Actual = N'Y=30 Z=9007199254740991'
+                   THEN N'   ok  (a value past INT survives the round trip)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== L. StateActivity.IndustryApp ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'StateActivity', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"ZACT1","description":"Probe state activity","active":true,"industryApp":true}
+                    ,{"activityLocation":"MD","code":"ZACT2","description":"Probe state activity 2","active":true,"industryApp":false}]'
+    , @RowsAffected = @Rows OUTPUT;
+SELECT @Actual = STRING_AGG (CONCAT (Code, N'=', COALESCE (CAST (IndustryApp AS NVARCHAR (1)), N'NULL')), N' ')
+                   WITHIN GROUP (ORDER BY Code)
+  FROM dbo.LookupStateActivity WHERE ActivityLocation = N'MD' AND Code LIKE N'ZACT%' AND IsDeleted = 0;
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', ', @Actual
+            , CASE WHEN @Rows = 2 AND @Actual = N'ZACT1=1 ZACT2=0' THEN N'   ok' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== M. EpisodicProject''s nested episodicType, flattened into four columns ===';
+-- Flattened rather than resolved against dbo.LookupEpisodicType: there is no FK to a lookup (B2), and
+-- a retired episodic type must still resolve for the project that used it.
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'EpisodicProject', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"ZP1","description":"Probe episodic project","active":true
+                     ,"episodicType":{"activityLocation":"MD","code":"Z","description":"Probe episodic type","active":false}}]'
+    , @RowsAffected = @Rows OUTPUT;
+SELECT @Actual = CONCAT (N'loc=',  COALESCE (EpisodicTypeActivityLocation, N'NULL')
+                       , N' code=', COALESCE (EpisodicTypeCode, N'NULL')
+                       , N' desc=', COALESCE (EpisodicTypeDescription, N'NULL')
+                       , N' active=', COALESCE (CAST (EpisodicTypeActive AS NVARCHAR (1)), N'NULL'))
+  FROM dbo.LookupEpisodicProject WHERE ActivityLocation = N'MD' AND Code = N'ZP1';
+PRINT CONCAT (N'  rowsWritten = ', @Rows, N', ', @Actual
+            , CASE WHEN @Rows = 1 AND @Actual = N'loc=MD code=Z desc=Probe episodic type active=0'
+                   THEN N'   ok  (the nested object arrived whole, active=false included)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== N. StateDistrict and its counties: the only nested ARRAY in all 23 definitions ===';
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'StateDistrict', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"ZDIST1","description":"Probe district one","active":true
+                     ,"counties":[{"activityLocation":"MD","code":"ZC1","description":"Probe county one","active":true}
+                                 ,{"activityLocation":"MD","code":"ZC2","description":"Probe county two","active":true}]}
+                    ,{"activityLocation":"MD","code":"ZDIST2","description":"Probe district two","active":true
+                     ,"counties":[{"activityLocation":"MD","code":"ZC3","description":"Probe county three","active":true}]}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT, @ChildRows = @Kids OUTPUT;
+PRINT CONCAT (N'  districts = ', @Rows, N', retired = ', @Retired, N', countyRows = ', @Kids
+            , CASE WHEN @Rows = 2 AND @Retired = 0 AND @Kids = 3 THEN N'   ok' ELSE N'   FAIL  expected 2, 0, 3' END);
+
+-- Now retire ZDIST2 entirely and ZC2 from within the surviving district, in one call. The county under
+-- ZDIST2 is never mentioned: it must go by CASCADE, because a live county under a retired district
+-- would read as current and there is no view over the child to filter it out.
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'StateDistrict', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"ZDIST1","description":"Probe district one","active":true
+                     ,"counties":[{"activityLocation":"MD","code":"ZC1","description":"Probe county one","active":true}]}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT, @ChildRows = @Kids OUTPUT;
+SELECT @Actual = CONCAT (N'districts ', (SELECT STRING_AGG (CONCAT (Code, N'=', CASE WHEN IsDeleted = 1 THEN N'retired' ELSE N'live' END), N' ')
+                                                  WITHIN GROUP (ORDER BY Code)
+                                           FROM dbo.LookupStateDistrict WHERE Code LIKE N'ZDIST%')
+                       , N' | counties ', (SELECT STRING_AGG (CONCAT (c.Code, N'=', CASE WHEN c.IsDeleted = 1 THEN N'retired' ELSE N'live' END), N' ')
+                                                    WITHIN GROUP (ORDER BY c.Code)
+                                             FROM dbo.LookupStateDistrictCounty AS c WHERE c.Code LIKE N'ZC%'));
+PRINT CONCAT (N'  districts = ', @Rows, N', retired = ', @Retired, N', countyRows = ', @Kids);
+PRINT CONCAT (N'  ', @Actual
+            , CASE WHEN @Retired = 1 AND @Kids = 2
+                    AND @Actual = N'districts ZDIST1=live ZDIST2=retired | counties ZC1=live ZC2=retired ZC3=retired'
+                   THEN N'   ok  (ZC2 named, ZC3 CASCADED)' ELSE N'   FAIL' END);
+
+EXEC dbo.uspRefreshLookupSet
+      @LoadRunId = @LoadRunId, @LookupName = N'StateDistrict', @Mode = N'Full'
+    , @Elements = N'[{"activityLocation":"MD","code":"ZDIST1","description":"Probe district one","active":true
+                     ,"counties":[{"activityLocation":"MD","code":"ZC1","description":"Probe county one","active":true}]}]'
+    , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT, @ChildRows = @Kids OUTPUT;
+PRINT CONCAT (N'  third identical call: districts = ', @Rows, N', retired = ', @Retired, N', countyRows = ', @Kids
+            , CASE WHEN @Rows = 0 AND @Retired = 0 AND @Kids = 0
+                   THEN N'   ok  (the cascade states an invariant, so it converges to zero)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== O. A Full that would retire more codes than it carries is REFUSED ===';
+SELECT @n = COUNT (*) FROM dbo.LookupContactType
+ WHERE ActivityLocation = N'MD' AND Code LIKE N'Z%' AND IsDeleted = 0;
+BEGIN TRY
+    EXEC dbo.uspRefreshLookupSet
+          @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Full'
+        , @Elements = N'[{"activityLocation":"MD","code":"Z1","description":"Probe contact one","active":true}]'
+        , @RowsAffected = @Rows OUTPUT, @RetiredRows = @Retired OUTPUT;
+    PRINT N'  FAIL  a truncated response was accepted as a complete list.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  ok    -> ', LEFT (ERROR_MESSAGE (), 150));
+END CATCH;
+SELECT @i = COUNT (*) FROM dbo.LookupContactType
+ WHERE ActivityLocation = N'MD' AND Code LIKE N'Z%' AND IsDeleted = 0;
+PRINT CONCAT (N'  live MD codes before ', @n, N', after ', @i
+            , CASE WHEN @i = @n THEN N'   ok  (the refusal rolled the retirements back)' ELSE N'   FAIL' END);
+
+-- The point of G35: the observation is written into a table variable BEFORE the THROW, so it survives
+-- the rollback the THROW causes. Without that, the refusal would exist only in an error message.
+SELECT @Actual = CONCAT (Severity, N'/', ObservationType, N' [', ObservedValue, N']')
+  FROM logs.DataQualityObservation
+ WHERE LoadRunId = @LoadRunId AND ObservationType = N'LookupRefreshRetiredTooMany' AND IsDeleted = 0;
+PRINT CONCAT (N'  observation survived the rollback: ', COALESCE (@Actual, N'(none)')
+            , CASE WHEN @Actual LIKE N'Error/LookupRefreshRetiredTooMany%'
+                   THEN N'   ok  (the refusal explains itself where the monitoring app can read it)'
+                   ELSE N'   FAIL' END);
+SELECT @Msg = Detail FROM logs.DataQualityObservation
+ WHERE LoadRunId = @LoadRunId AND ObservationType = N'LookupRefreshRetiredTooMany' AND IsDeleted = 0;
+PRINT CONCAT (N'  detail: ', LEFT (COALESCE (@Msg, N''), 200));
+PRINT CONCAT (N'  says so explicitly = '
+            , CASE WHEN @Msg LIKE N'%FAILED%' OR @Msg LIKE N'%rolled back%'
+                   THEN N'yes   ok  (it must not read as though the retirements happened)' ELSE N'NO   FAIL' END);
+
+PRINT N'';
+PRINT N'=== P. Comments on the successful executions ===';
+DECLARE @log TABLE (Ordinal INT IDENTITY (1,1), Comments NVARCHAR (MAX));
+INSERT INTO @log (Comments)
+SELECT Comments FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspRefreshLookupSet]' AND Successful = 1
+ ORDER BY ExecutionLogId DESC;
+SELECT @i = 1, @n = (SELECT MIN (v) FROM (VALUES (6), ((SELECT COUNT (*) FROM @log))) AS x (v));
+WHILE @i <= @n
+BEGIN
+    SELECT @Msg = Comments FROM @log WHERE Ordinal = @i;
+    PRINT CONCAT (N'  ', LEFT (@Msg, 190));
+    SET @i += 1;
+END;
+-- Scoped to this run, and to the one message section O produces. A looser LIKE '%retire%' also matches
+-- the Full-plus-empty refusal, and a count that answers a different question than its label is worse
+-- than no count.
+SELECT @n = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspRefreshLookupSet]' AND Successful = 0
+   AND ErrorMessage LIKE N'Refused: a Full refresh of the ContactType list would retire%';
+PRINT CONCAT (N'  failed executions recorded for the section O refusal = ', @n
+            , CASE WHEN @n >= 1 THEN N'   ok  (the error is recorded, not only thrown)' ELSE N'   FAIL' END);
+SELECT @n = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspRefreshLookupSet]' AND Successful = 0;
+PRINT CONCAT (N'  failed executions recorded in total (17 refusals this run) = ', @n
+            , CASE WHEN @n >= 17 THEN N'   ok  (every refusal reached logs.ExecutionLog)' ELSE N'   FAIL' END);
+SELECT @n = COUNT (*) FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspRefreshLookupSet]' AND KeyParameters LIKE N'%activityLocation%';
+PRINT CONCAT (N'  executions whose KeyParameters leaked the payload = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok  (@Elements is excluded by name)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== Q. A closed run refuses further work ===';
+EXEC logs.uspCompleteLoadRun @LoadRunId = @LoadRunId, @Status = N'Succeeded';
+BEGIN TRY
+    EXEC dbo.uspRefreshLookupSet
+          @LoadRunId = @LoadRunId, @LookupName = N'ContactType', @Mode = N'Upsert'
+        , @Elements = N'[{"activityLocation":"MD","code":"Z9","description":"Must never be applied"}]';
+    PRINT N'  FAIL  a closed run accepted a refresh.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  ok    -> ', LEFT (ERROR_MESSAGE (), 120));
+END CATCH;
+SELECT @n = COUNT (*) FROM dbo.LookupContactType WHERE Code = N'Z9';
+PRINT CONCAT (N'  rows for Z9 = ', @n, CASE WHEN @n = 0 THEN N'   ok' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== Cleanup: soft delete only ===';
+UPDATE dbo.LookupStateDistrictCounty SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code LIKE N'ZC%' AND IsDeleted = 0;
+UPDATE dbo.LookupStateDistrict SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code LIKE N'ZDIST%' AND IsDeleted = 0;
+UPDATE dbo.LookupContactType SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code LIKE N'Z%' AND IsDeleted = 0;
+UPDATE dbo.LookupHsmReason SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code IN (N'Y', N'Z') AND IsDeleted = 0;
+UPDATE dbo.LookupHandlerSourceType SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code IN (N'Y', N'Z') AND IsDeleted = 0;
+UPDATE dbo.LookupWasteCode SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code = N'ZZZZZZ' AND IsDeleted = 0;
+UPDATE dbo.LookupStateActivity SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code LIKE N'ZACT%' AND IsDeleted = 0;
+UPDATE dbo.LookupEpisodicProject SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE Code = N'ZP1' AND IsDeleted = 0;
+UPDATE logs.DataQualityObservation SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @LoadRunId;
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @LoadRunId;
+SELECT @n = (SELECT COUNT (*) FROM dbo.LookupContactType WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupHsmReason WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupWasteCode WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupStateDistrict WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupStateDistrictCounty WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupHandlerSourceType WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupStateActivity WHERE IsDeleted = 0)
+          + (SELECT COUNT (*) FROM dbo.LookupEpisodicProject WHERE IsDeleted = 0);
+PRINT CONCAT (N'  live probe codes remaining = ', @n
+            , CASE WHEN @n = 0 THEN N'   ok  (retired, not removed -- a re-run revives them)' ELSE N'   FAIL' END);

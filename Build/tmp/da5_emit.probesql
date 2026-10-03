@@ -1,0 +1,23 @@
+SET NOCOUNT ON;
+DECLARE @Sql NVARCHAR (MAX) = N'EXEC dbo.uspGetHandlerSourceDetail @HandlerSourceId = NULL';
+SELECT CONCAT (
+    N'    public ',
+    CASE
+      WHEN system_type_name LIKE N'nvarchar%' OR system_type_name LIKE N'varchar%' THEN N'string'
+      WHEN system_type_name = N'int'      THEN N'int'
+      WHEN system_type_name = N'bigint'   THEN N'long'
+      WHEN system_type_name = N'tinyint'  THEN N'byte'
+      WHEN system_type_name = N'bit'      THEN N'bool'
+      WHEN system_type_name = N'float'    THEN N'double'
+      WHEN system_type_name = N'date'     THEN N'DateOnly'
+      WHEN system_type_name LIKE N'datetime2%' THEN N'DateTime'
+      ELSE CONCAT (N'/*?', system_type_name, N'*/')
+    END,
+    CASE WHEN is_nullable = 1 THEN N'?' ELSE N'' END,
+    N' ',
+    CASE WHEN name LIKE N'audit%' THEN CONCAT (UPPER (LEFT (name, 1)), SUBSTRING (name, 2, 200)) ELSE name END,
+    N' { get; init; }',
+    CASE WHEN is_nullable = 0 AND (system_type_name LIKE N'%varchar%') THEN N' = null!;' ELSE N'' END
+) AS Line
+FROM sys.dm_exec_describe_first_result_set (@Sql, NULL, 0)
+ORDER BY column_ordinal;

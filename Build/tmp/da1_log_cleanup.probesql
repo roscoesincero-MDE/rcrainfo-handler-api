@@ -1,0 +1,36 @@
+-- A defect in the DA1 page probe -- a BIT loop counter, where 1 + 1 converts back to 1 -- called
+-- logs.uspGetLoadRunPage about 70,000 times before it was stopped. Soft delete, not DELETE: there is
+-- no hard delete anywhere in this database, and a mess made by a probe is not an exception to that.
+--
+-- Keep the most recent 50 calls as the DA1 evidence and stamp the rest deleted. Batched, because one
+-- UPDATE over 70,000 rows takes a lock escalation and a long transaction for no reason.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @Keep INT = 50, @Batch INT = 5000, @Done INT = 1, @Total INT = 0;
+DECLARE @Cutoff BIGINT =
+    (SELECT MIN (ExecutionLogId)
+       FROM (SELECT TOP (@Keep) ExecutionLogId
+               FROM logs.ExecutionLog
+              WHERE ProcedureName = N'[logs].[uspGetLoadRunPage]' AND IsDeleted = 0
+              ORDER BY ExecutionLogId DESC) AS k);
+
+WHILE @Done > 0
+BEGIN
+    UPDATE TOP (@Batch) logs.ExecutionLog
+       SET IsDeleted            = 1
+         , auditDeletedBy       = ORIGINAL_LOGIN ()
+         , auditDeletedDateUtc  = SYSUTCDATETIME ()
+         , auditModifiedBy      = ORIGINAL_LOGIN ()
+         , auditModifiedDateUtc = SYSUTCDATETIME ()
+     WHERE ProcedureName = N'[logs].[uspGetLoadRunPage]'
+       AND IsDeleted     = 0
+       AND ExecutionLogId < @Cutoff;
+    SET @Done = @@ROWCOUNT;
+    SET @Total += @Done;
+END;
+
+SELECT @Total AS SoftDeleted
+     , SUM (CASE WHEN IsDeleted = 0 THEN 1 ELSE 0 END) AS StillLive
+     , COUNT (*) AS TotalRows
+  FROM logs.ExecutionLog WHERE ProcedureName = N'[logs].[uspGetLoadRunPage]';

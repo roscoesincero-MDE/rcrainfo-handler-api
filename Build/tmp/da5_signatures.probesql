@@ -1,0 +1,20 @@
+SET NOCOUNT ON;
+SELECT CONCAT (
+  QUOTENAME (SCHEMA_NAME (p.schema_id)), N'.', QUOTENAME (p.name),
+  N' | ',
+  ISNULL (STUFF ((SELECT CONCAT (N', ', pa.name, N' ',
+                          TYPE_NAME (pa.user_type_id),
+                          CASE WHEN TYPE_NAME (pa.user_type_id) LIKE N'%char%'
+                               THEN CONCAT (N'(', CASE WHEN pa.max_length = -1 THEN N'MAX'
+                                                       ELSE CAST (pa.max_length / 2 AS NVARCHAR (10)) END, N')')
+                               ELSE N'' END,
+                          CASE WHEN pa.is_output = 1 THEN N' OUT' ELSE N'' END,
+                          CASE WHEN pa.has_default_value = 1 THEN N' =def' ELSE N'' END)
+                   FROM sys.parameters AS pa
+                   WHERE pa.object_id = p.object_id
+                   ORDER BY pa.parameter_id
+                   FOR XML PATH (N''), TYPE).value (N'.', N'NVARCHAR(MAX)'), 1, 2, N''), N'(none)')
+) AS Sig
+FROM sys.objects AS p
+WHERE p.type = N'P' AND p.is_ms_shipped = 0
+ORDER BY SCHEMA_NAME (p.schema_id), p.name;

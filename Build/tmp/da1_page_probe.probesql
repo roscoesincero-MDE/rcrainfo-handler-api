@@ -1,0 +1,176 @@
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+PRINT N'--- 0. SEED 12 LOAD RUNS (converging insert; safe to re-run) ---------------';
+INSERT INTO logs.LoadRun (RunMode, ActivityLocation, Status, StartedDateUtc, CompletedDateUtc,
+                          SourceRecordsFetched, SourceRecordsFailed, MachineName)
+SELECT v.RunMode, N'MD', v.Status
+     , DATEADD (HOUR, -v.H, CAST (N'2026-09-05T08:00:00' AS DATETIME2))
+     , CASE WHEN v.Status = N'Running' THEN NULL
+            ELSE DATEADD (MINUTE, v.H, DATEADD (HOUR, -v.H, CAST (N'2026-09-05T08:00:00' AS DATETIME2))) END
+     , v.Fetched, v.Failed, N'DA1PROBE'
+  FROM (VALUES  (1, N'Full',        N'Succeeded',          1200,  0)
+              , (2, N'Incremental', N'Succeeded',            40,  0)
+              , (3, N'Incremental', N'Failed',                0, 17)
+              , (4, N'Incremental', N'PartiallySucceeded',   38,  2)
+              , (5, N'Reconcile',   N'Succeeded',           900,  0)
+              , (6, N'Incremental', N'Succeeded',            12,  0)
+              , (7, N'Incremental', N'Abandoned',             5,  1)
+              , (8, N'Incremental', N'Succeeded',            22,  0)
+              , (9, N'Full',        N'Failed',                0, 99)
+              , (10, N'Incremental', N'Succeeded',            7,  0)
+              , (11, N'Incremental', N'Running',             55,  0)
+              , (12, N'Reconcile',   N'Succeeded',          301,  3)
+       ) AS v (H, RunMode, Status, Fetched, Failed)
+ WHERE NOT EXISTS (SELECT 1 FROM logs.LoadRun WHERE MachineName = N'DA1PROBE');
+
+SELECT COUNT (*) AS ProbeRuns FROM logs.LoadRun WHERE MachineName = N'DA1PROBE';
+
+-- Shaped from sys.dm_exec_describe_first_result_set. Only the columns the assertions read are named;
+-- the rest are there because INSERT ... EXEC requires the full shape, which is itself the check that
+-- the shape has not drifted.
+CREATE TABLE #Page
+(
+    LoadRunId INT, RunMode NVARCHAR (20), ActivityLocation NVARCHAR (2),
+    RequestedFromDate DATE, RequestedToDate DATE, WatermarkBeforeDate DATE, WatermarkAfterDate DATE,
+    OverlapDaysApplied INT, Status NVARCHAR (20), StartedDateUtc DATETIME2, CompletedDateUtc DATETIME2,
+    ElapsedSeconds INT, ResumedFromLoadRunId INT, LookupListsRefreshed INT,
+    SourceRecordsEnumerated INT, SourceRecordsFetched INT, SourceRecordsInserted INT,
+    SourceRecordsUpdated INT, SourceRecordsUnchanged INT, SourceRecordsSoftDeleted INT,
+    SourceRecordsSkipped INT, SourceRecordsFailed INT, HttpRequestCount INT, HttpRetryCount INT,
+    FailureMessage NVARCHAR (4000), InvokedBy NVARCHAR (128), MachineName NVARCHAR (128),
+    ProcessId INT, ApplicationVersion NVARCHAR (50), IsDeleted BIT, auditModifiedDateUtc DATETIME2,
+    TotalRows INT
+);
+
+-- @Desc is INT, not BIT, and that is the whole reason this file was rewritten once. A BIT loop counter
+-- never terminates: 1 + 1 is 2, which converts back to 1, so `WHILE @Desc <= 1` is forever. The first
+-- run of this probe called logs.uspGetLoadRunPage about 70,000 times before it was stopped.
+DECLARE @Label NVARCHAR (60), @Col NVARCHAR (50), @Desc INT, @Skip INT, @Take INT;
+DECLARE @Out TABLE (Label NVARCHAR (60), Rows INT, TotalRows INT, Ids NVARCHAR (400), SortKeys NVARCHAR (400));
+DECLARE @Pages TABLE (Skip INT, LoadRunId INT);
+
+PRINT N'--- 1. DEFAULT CALL, AND PAGING BOUNDARIES --------------------------------';
+SET @Skip = 0;
+WHILE @Skip <= 15
+BEGIN
+    TRUNCATE TABLE #Page;
+    INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Skip = @Skip, @Take = 5;
+    INSERT INTO @Pages (Skip, LoadRunId) SELECT @Skip, LoadRunId FROM #Page;
+    INSERT INTO @Out (Label, Rows, TotalRows, Ids)
+    SELECT CONCAT (N'page skip=', @Skip, N' take=5'), COUNT (*), MAX (TotalRows)
+         , STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N',')
+      FROM #Page;
+    SET @Skip += 5;
+END;
+
+TRUNCATE TABLE #Page;
+INSERT INTO #Page EXEC logs.uspGetLoadRunPage;
+INSERT INTO @Out (Label, Rows, TotalRows, Ids)
+SELECT N'default (skip 0 take 50)', COUNT (*), MAX (TotalRows)
+     , STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N',')
+  FROM #Page;
+
+PRINT N'--- 2. EVERY WHITELISTED COLUMN, BOTH DIRECTIONS (first 4 rows) -----------';
+DECLARE @Cols TABLE (Ordinal INT IDENTITY (1, 1), Col NVARCHAR (50));
+INSERT INTO @Cols (Col) VALUES (N'LoadRunId'), (N'StartedDateUtc'), (N'CompletedDateUtc')
+                             , (N'Status'), (N'RunMode'), (N'SourceRecordsFailed');
+DECLARE @i INT = 1, @n INT = (SELECT COUNT (*) FROM @Cols);
+WHILE @i <= @n
+BEGIN
+    SET @Col = (SELECT Col FROM @Cols WHERE Ordinal = @i);
+    SET @Desc = 0;
+    WHILE @Desc <= 1
+    BEGIN
+        TRUNCATE TABLE #Page;
+        INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Take = 4, @SortBy = @Col
+                                                    , @SortDescending = @Desc;
+        INSERT INTO @Out (Label, Rows, TotalRows, Ids, SortKeys)
+        SELECT CONCAT (@Col, CASE @Desc WHEN 1 THEN N' DESC' ELSE N' ASC' END)
+             , COUNT (*), MAX (TotalRows)
+             , STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N',')
+             , STRING_AGG (COALESCE (CASE @Col
+                                     WHEN N'LoadRunId'           THEN CAST (LoadRunId AS NVARCHAR (30))
+                                     WHEN N'StartedDateUtc'      THEN CONVERT (NVARCHAR (30), StartedDateUtc, 120)
+                                     WHEN N'CompletedDateUtc'    THEN CONVERT (NVARCHAR (30), CompletedDateUtc, 120)
+                                     WHEN N'Status'              THEN Status
+                                     WHEN N'RunMode'             THEN RunMode
+                                     WHEN N'SourceRecordsFailed' THEN CAST (SourceRecordsFailed AS NVARCHAR (30))
+                                     END, N'(null)'), N' | ')
+          FROM #Page;
+        SET @Desc += 1;
+    END;
+    SET @i += 1;
+END;
+
+PRINT N'--- 3. CASE-INSENSITIVE @SortBy, CLAMPING, FILTERS ------------------------';
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Take = 2, @SortBy = N'startedDATEUTC';
+INSERT INTO @Out SELECT N'sortby startedDATEUTC', COUNT (*), MAX (TotalRows), STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N','), NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Take = 100000;
+INSERT INTO @Out SELECT N'take 100000 -> clamped', COUNT (*), MAX (TotalRows), NULL, NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Take = 0;
+INSERT INTO @Out SELECT N'take 0 -> floored to 1', COUNT (*), MAX (TotalRows), NULL, NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Take = NULL, @Skip = NULL;
+INSERT INTO @Out SELECT N'take/skip NULL -> defaults', COUNT (*), MAX (TotalRows), NULL, NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Skip = -50, @Take = 3;
+INSERT INTO @Out SELECT N'skip -50 -> floored to 0', COUNT (*), MAX (TotalRows), STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N','), NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Skip = 2147483647, @Take = 3;
+INSERT INTO @Out SELECT N'skip INT_MAX -> no overflow', COUNT (*), MAX (TotalRows), NULL, NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Status = N'Failed';
+INSERT INTO @Out SELECT N'status Failed', COUNT (*), MAX (TotalRows), STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N','), NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @RunMode = N'Reconcile', @SortBy = N'SourceRecordsFailed';
+INSERT INTO @Out SELECT N'runmode Reconcile', COUNT (*), MAX (TotalRows), STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N','), NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @StartedFromUtc = '2026-09-05T02:00:00', @StartedToUtc = '2026-09-05T05:00:00';
+INSERT INTO @Out SELECT N'started 02:00..05:00', COUNT (*), MAX (TotalRows), STRING_AGG (CAST (LoadRunId AS NVARCHAR (11)), N','), NULL FROM #Page;
+
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Status = N'NoSuchStatus';
+INSERT INTO @Out SELECT N'no match -> empty, no TotalRows', COUNT (*), MAX (TotalRows), NULL, NULL FROM #Page;
+
+SELECT Label, Rows, TotalRows, Ids, SortKeys FROM @Out;
+
+PRINT N'--- 4. PAGING: repeats and gaps across the four pages ---------------------';
+SELECT (SELECT COUNT (*) FROM @Pages)                       AS RowsAcrossPages
+     , (SELECT COUNT (DISTINCT LoadRunId) FROM @Pages)      AS DistinctIds
+     , (SELECT COUNT (*) FROM logs.LoadRun WHERE IsDeleted = 0) AS LiveRuns;
+
+PRINT N'--- 5. UNRECOGNISED @SortBy MUST THROW ------------------------------------';
+BEGIN TRY EXEC logs.uspGetLoadRunPage @SortBy = N'StartedDate'; END TRY
+BEGIN CATCH PRINT N'  5a typo -> ' + LEFT (ERROR_MESSAGE (), 130); END CATCH;
+BEGIN TRY EXEC logs.uspGetLoadRunPage @SortBy = NULL; END TRY
+BEGIN CATCH PRINT N'  5b null -> ' + LEFT (ERROR_MESSAGE (), 60); END CATCH;
+BEGIN TRY EXEC logs.uspGetLoadRunPage @SortBy = N'FailureMessage; DROP TABLE x'; END TRY
+BEGIN CATCH PRINT N'  5c junk -> ' + LEFT (ERROR_MESSAGE (), 60); END CATCH;
+
+PRINT N'--- 6. SOFT-DELETE VISIBILITY --------------------------------------------';
+UPDATE TOP (2) logs.LoadRun SET IsDeleted = 1, auditDeletedBy = ORIGINAL_LOGIN ()
+     , auditDeletedDateUtc = SYSUTCDATETIME (), auditModifiedBy = ORIGINAL_LOGIN ()
+     , auditModifiedDateUtc = SYSUTCDATETIME ()
+ WHERE MachineName = N'DA1PROBE' AND IsDeleted = 0;
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Take = 1, @IncludeDeleted = 0;
+SELECT N'IncludeDeleted=0' AS Call, TotalRows FROM #Page;
+TRUNCATE TABLE #Page; INSERT INTO #Page EXEC logs.uspGetLoadRunPage @Take = 1, @IncludeDeleted = 1;
+SELECT N'IncludeDeleted=1' AS Call, TotalRows FROM #Page;
+
+PRINT N'--- 7. AR8 LOG ROWS (last 12) --------------------------------------------';
+SELECT TOP (12) ExecutionLogId, Successful, ElapsedMilliseconds
+     , LEFT (COALESCE (Comments, ErrorMessage), 46) AS Detail
+     , LEFT (KeyParameters, 62) AS KeyParams
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[logs].[uspGetLoadRunPage]'
+ ORDER BY ExecutionLogId DESC;
+
+SELECT COUNT (*) AS TotalPageCallsLogged
+     , SUM (CAST (Successful AS INT)) AS Succeeded
+     , SUM (CASE WHEN Successful = 0 THEN 1 ELSE 0 END) AS Failed
+     , SUM (CAST (ReCreatedAfterRollback AS INT)) AS ReCreated
+  FROM logs.ExecutionLog WHERE ProcedureName = N'[logs].[uspGetLoadRunPage]';
+
+DROP TABLE #Page;

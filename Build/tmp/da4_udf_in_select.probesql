@@ -1,0 +1,83 @@
+-- MDE's review case, reproduced exactly: a procedure whose entire body is one SELECT, with a scalar
+-- UDF called inside that SELECT, and the UDF errors. In MDE's other application nothing was recorded.
+-- Two throwaway objects, both dropped at the end -- they are test scaffolding, not schema, and neither
+-- is a table, so no data is destroyed by removing them.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+IF OBJECT_ID (N'dbo.uspProbeUdfInSelect', N'P')   IS NOT NULL DROP PROCEDURE dbo.uspProbeUdfInSelect;
+IF OBJECT_ID (N'dbo.udfProbeAlwaysFails', N'FN')  IS NOT NULL DROP FUNCTION  dbo.udfProbeAlwaysFails;
+GO
+
+CREATE FUNCTION dbo.udfProbeAlwaysFails (@Input INT)
+RETURNS INT
+AS
+BEGIN
+    -- A UDF cannot THROW, which is precisely why this failure mode is easy to miss: it fails through
+    -- arithmetic instead, and the error surfaces at the CALLER's SELECT.
+    RETURN @Input / 0;
+END;
+GO
+
+CREATE PROCEDURE dbo.uspProbeUdfInSelect
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @ProcName    NVARCHAR (300) = N'[dbo].[uspProbeUdfInSelect]'
+          , @ErrorMsg    NVARCHAR (MAX) = NULL
+          , @ErrorProc   NVARCHAR (300) = NULL
+          , @ErrorNumber INT            = NULL
+          , @ErrorLine   INT            = NULL;
+
+    BEGIN TRY
+        SELECT dbo.udfProbeAlwaysFails (1) AS Value;   -- the whole body, as in MDE's case
+    END TRY
+    BEGIN CATCH
+        SELECT @ErrorNumber = ERROR_NUMBER ()
+             , @ErrorProc   = ERROR_PROCEDURE ()
+             , @ErrorLine   = ERROR_LINE ()
+             , @ErrorMsg    = ERROR_MESSAGE ();
+
+        EXEC logs.uspRecordExecutionError
+              @ProcedureName  = @ProcName
+            , @ExecutionLogId = NULL
+            , @ErrorMessage   = @ErrorMsg
+            , @ErrorProcedure = @ErrorProc
+            , @ErrorNumber    = @ErrorNumber
+            , @ErrorLine      = @ErrorLine
+            , @ContextMessage = N'Probe: read-only procedure, scalar UDF inside the SELECT.';
+        ;THROW;
+    END CATCH;
+END;
+GO
+
+DECLARE @Before BIGINT = (SELECT COUNT (*) FROM logs.ExecutionLog
+                           WHERE ProcedureName = N'[dbo].[uspProbeUdfInSelect]');
+
+BEGIN TRY
+    EXEC dbo.uspProbeUdfInSelect;
+    PRINT N'  FAIL: the call did not throw.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  caller received error ', ERROR_NUMBER (), N' (8134 = divide by zero).');
+END CATCH;
+
+DECLARE @After BIGINT = (SELECT COUNT (*) FROM logs.ExecutionLog
+                          WHERE ProcedureName = N'[dbo].[uspProbeUdfInSelect]');
+PRINT CONCAT (N'  rows recorded: ', @After - @Before,
+              CASE WHEN @After - @Before = 1 THEN N'  <-- PASS: a UDF error inside a SELECT IS recorded.'
+                   ELSE N'  <-- FAIL' END);
+
+SELECT TOP (1) ProcedureName, ErrorNumber, ErrorProcedure, ErrorLine, Successful
+             , LEFT (ErrorMessage, 80) AS ErrorMessage_first80
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspProbeUdfInSelect]'
+ ORDER BY ExecutionLogId DESC;
+GO
+
+DROP PROCEDURE dbo.uspProbeUdfInSelect;
+DROP FUNCTION  dbo.udfProbeAlwaysFails;
+PRINT N'  scaffolding removed.';
+GO

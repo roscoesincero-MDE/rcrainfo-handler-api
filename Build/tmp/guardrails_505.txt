@@ -1,0 +1,64 @@
+[PASS] gitignore secrets (1.8s)
+       PASS  .gitignore secret exclusion (13 ignored, 9 tracked, 22 paths checked)
+[PASS] SQL conventions (1.4s)
+       PASS  SQL conventions: 78 file(s), no violations.
+[PASS] SQL validator fixtures (3.4s)
+       PASS  SQL guardrails (13 negative fixtures asserting 49 distinct rules, plus the positive control and the empty-input case)
+[PASS] cross-database references (0.2s)
+       PASS  cross-database references (29 files scanned, 15 self-test samples classified; everything resolves inside RCRAInfo)
+[PASS] API spec baseline (0.2s)
+         spec info.version                                1.0 (built on 09/01/2026 06:43:56 PM)
+         API paths                                        91
+         definitions                                      142
+         HandlerSource top-level properties               38
+           ... of which scalar (dbo.HandlerSource columns) 19
+         leaf fields (total)                              444
+           ... carrying an EPA description                187
+           ... as a percentage                            42
+         leaf fields in scope (columns to model)          377
+           ... carrying an EPA description                187
+           ... as a percentage (the B4 harvest)           50
+         repeating collections (total)                    24
+           ... in scope (child tables)                    18
+         nested objects (flattened into parent)           85
+           ... in scope                                   74
+         /lookup/hd/* endpoints                           24
+           ... distinct response definitions              23
+         in-scope string leaves with no maxLength         73
+       
+       PASS  measure_spec: the pinned spec and all 19 measurements match the baseline.
+[PASS] generated schema is current (0.6s)
+       PASS  generate_schema: 48 script(s) match the generator.
+[PASS] credential-file ACL self-test (1.0s)
+       self-test file    : C:\Users\rsincero\AppData\Local\Temp\rcrainfo-acl-selftest-996c000bce2644929787dd2c0fa74397.tmp
+       self-test identity: NT AUTHORITY\NETWORK SERVICE
+       
+       allowed : NT AUTHORITY\NETWORK SERVICE -> read access: True (granted mask 0x120089)
+       denied  : NT AUTHORITY\NETWORK SERVICE -> read access: False (granted mask 0x0)
+       
+       PASS  credential-file ACL: the deny is written, it outranks a competing Allow, and the access check detects both directions.
+[PASS] SQL Server 2022 parse (2.6s)
+       PASS  SQL Server 2022 parse (TSql160Parser): 78 file(s), no errors.
+[PASS] build and banned APIs (4.3s)
+       
+       Build succeeded.
+           0 Warning(s)
+           0 Error(s)
+       
+       Time Elapsed 00:00:03.94
+[PASS] permission posture (87.7s)
+       PASS  permission posture (283 assertions, attempted as the logins themselves, across 2 logins)
+[PASS] stored headers (0.8s)
+       PASS  stored headers (22 deployed module(s) all carry their header block in sys.sql_modules, every non-exempt procedure records its own errors, and none of the 20 procedure(s) rolls back a transaction it did not open)
+[PASS] cascade coverage (0.4s)
+       PASS  cascade coverage (19 mirror descendant(s) of dbo.HandlerSource, all soft-deleted by 522_dbo.uspSoftDeleteHandlerSourceSet.sql; 3 audit-trail descendant(s) correctly left alone: logs.DataQualityObservation, logs.HandlerLoadAttempt, logs.HandlerLoadStatus; dbo.HandlerOtherIdentifier correctly has no foreign key and stays out of the version cascade)
+[PASS] lookup coverage (0.5s)
+       PASS  lookup coverage (24 mirrored lookup table(s), all merged and retired by 523_dbo.uspRefreshLookupSet.sql; 23 EPA response definition(s) dispatched, every Code width and every ActivityLocation agreeing with sys.columns; 117 writable column(s) all written; LookupStateDistrictCounty inside the StateDistrict branch)
+[PASS] closed-set filters (0.5s)
+       PASS  closed-set filters (4 filter(s) across 20 procedure script(s) each reject every value outside the CHECK constraint they filter, name that constraint, and list the same set in prose; 7 closed-set constraint(s) in the catalog)
+[PASS] detail projection (0.6s)
+       PASS  detail projection (215 of 218 dbo.vwHandlerSourceHistory column(s) returned by dbo.uspGetHandlerSourceDetail, in catalog order, matching in the file and in the deployed module; 3 documented exclusion(s) present in the view and absent from the projection: IsDeleted, auditDeletedBy, auditDeletedDateUtc)
+[PASS] run deployment twice (56.2s)
+       PASS  run-twice: a second full deployment changed nothing (7 catalog probes compared; rows per probe: objects 545, columns 1470, indexes 134, descriptions 1107, permissions 79, principals 4, audit stamps 51)
+
+PASS  guardrails: 16 check(s) passed

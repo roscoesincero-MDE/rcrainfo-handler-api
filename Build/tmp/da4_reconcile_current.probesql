@@ -1,0 +1,182 @@
+-- Probe for dbo.uspReconcileCurrentRecord (script 521).
+--
+-- Every handler used here is a MDPROBE* id that cannot collide with EPA data, and every row this
+-- script creates is SOFT-deleted at the end. Nothing is dropped and nothing is removed.
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @LoadRunId INT, @Rows INT, @Obs INT, @Stamp DATETIME2, @Stamp2 DATETIME2
+      , @Msg NVARCHAR (MAX), @Actual NVARCHAR (400);
+
+EXEC logs.uspStartLoadRun @RunMode = N'Reconcile', @AllowConcurrent = 1
+                        , @MachineName = N'da4_reconcile_current.probesql'
+                        , @ApplicationVersion = N'probe'
+                        , @LoadRunId = @LoadRunId OUTPUT;
+PRINT CONCAT (N'Opened LoadRunId ', @LoadRunId);
+PRINT N'';
+
+----------------------------------------------------------------------------------------------------
+-- Fixture. CurrentRecord is left NULL on every row, which is the state a freshly merged version is
+-- in and the one <> would fail to match.
+----------------------------------------------------------------------------------------------------
+INSERT INTO dbo.HandlerSource (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord)
+VALUES (N'MDPROBE00001', N'MD', N'N', 1, NULL)      -- B: history, none current yet
+     , (N'MDPROBE00001', N'MD', N'N', 2, NULL)
+     , (N'MDPROBE00001', N'MD', N'N', 3, 1)         -- was current until version 4 arrived
+     , (N'MDPROBE00001', N'MD', N'N', 4, NULL)
+     , (N'MDPROBE00002', N'MD', N'N', 1, NULL)      -- D: EPA names two currents
+     , (N'MDPROBE00002', N'MD', N'N', 2, NULL)
+     , (N'MDPROBE00002', N'MD', N'N', 3, NULL)
+     , (N'MDPROBE00003', N'MD', N'N', 1, NULL)      -- E: version 2 is not in EPA's list
+     , (N'MDPROBE00003', N'MD', N'N', 2, 1)
+     , (N'MDPROBE00004', N'MD', N'N', 1, NULL)      -- F: EPA says nothing is current
+     , (N'MDPROBE00004', N'MD', N'N', 2, NULL)
+     , (N'MDPROBE00005', N'MD', N'N', 1, NULL)      -- I: currentRecord sent as the number 1
+     , (N'MDPROBE00006', N'MD', N'A', 1, 1);        -- untouched control: never mentioned in any call
+
+PRINT N'=== A. Refusals ===';
+
+DECLARE @cases TABLE (Ordinal INT IDENTITY (1,1), Label NVARCHAR (100), Summaries NVARCHAR (MAX), UseRun BIT);
+INSERT INTO @cases (Label, Summaries, UseRun) VALUES
+  (N'null LoadRunId',        N'[{"handlerId":"MDPROBE00001","sourceType":"N","sequence":1,"currentRecord":true}]', 0)
+, (N'not JSON',              N'not json', 1)
+, (N'incomplete key',        N'[{"handlerId":"MDPROBE00001","sourceType":"N","currentRecord":true}]', 1)
+, (N'unreadable flag',       N'[{"handlerId":"MDPROBE00001","sourceType":"N","sequence":1,"currentRecord":"Y"}]', 1)
+, (N'missing flag',          N'[{"handlerId":"MDPROBE00001","sourceType":"N","sequence":1}]', 1)
+, (N'handlerId too wide',    N'[{"handlerId":"MDPROBE000012345","sourceType":"N","sequence":1,"currentRecord":true}]', 1)
+, (N'duplicate version',     N'[{"handlerId":"MDPROBE00001","sourceType":"N","sequence":1,"currentRecord":true}
+                               ,{"handlerId":"MDPROBE00001","sourceType":"N","sequence":1,"currentRecord":false}]', 1);
+
+DECLARE @i INT = 1, @n INT = (SELECT COUNT (*) FROM @cases), @lbl NVARCHAR (100)
+      , @sum NVARCHAR (MAX), @useRun BIT, @runArg INT;
+WHILE @i <= @n
+BEGIN
+    SELECT @lbl = Label, @sum = Summaries, @useRun = UseRun FROM @cases WHERE Ordinal = @i;
+    SET @runArg = CASE WHEN @useRun = 1 THEN @LoadRunId ELSE NULL END;
+    BEGIN TRY
+        EXEC dbo.uspReconcileCurrentRecord @LoadRunId = @runArg, @Summaries = @sum;
+        PRINT CONCAT (N'  FAIL  ', @lbl, N' was accepted.');
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT (N'  ok    ', @lbl, N' -> ', LEFT (ERROR_MESSAGE (), 84));
+    END CATCH;
+    SET @i += 1;
+END;
+
+PRINT N'';
+PRINT N'=== B. Version 4 becomes current and version 3 stops, from EPA''s list alone ===';
+DECLARE @B NVARCHAR (MAX) = N'[{"handlerId":"MDPROBE00001","sourceType":"N","sequence":1,"currentRecord":false}
+                              ,{"handlerId":"MDPROBE00001","sourceType":"N","sequence":2,"currentRecord":false}
+                              ,{"handlerId":"MDPROBE00001","sourceType":"N","sequence":3,"currentRecord":false}
+                              ,{"handlerId":"MDPROBE00001","sourceType":"N","sequence":4,"currentRecord":true}]';
+EXEC dbo.uspReconcileCurrentRecord @LoadRunId = @LoadRunId, @Summaries = @B
+                                 , @RowsAffected = @Rows OUTPUT, @Observations = @Obs OUTPUT;
+SELECT @Actual = STRING_AGG (CONCAT (Sequence, N'=', COALESCE (CAST (CurrentRecord AS NVARCHAR (1)), N'NULL')), N' ')
+                   WITHIN GROUP (ORDER BY Sequence)
+  FROM dbo.HandlerSource WHERE HandlerId = N'MDPROBE00001' AND IsDeleted = 0;
+PRINT CONCAT (N'  flags = ', @Actual, N'   rowsAffected = ', @Rows, N', observations = ', @Obs
+            , CASE WHEN @Actual = N'1=0 2=0 3=0 4=1' AND @Rows = 4 AND @Obs = 0
+                   THEN N'   ok  (three NULLs and one demotion, no observation)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== C. A second identical reconcile writes nothing and moves no audit stamp ===';
+SELECT @Stamp = MAX (auditModifiedDateUtc) FROM dbo.HandlerSource WHERE HandlerId = N'MDPROBE00001';
+WAITFOR DELAY '00:00:00.050';
+EXEC dbo.uspReconcileCurrentRecord @LoadRunId = @LoadRunId, @Summaries = @B
+                                 , @RowsAffected = @Rows OUTPUT, @Observations = @Obs OUTPUT;
+SELECT @Stamp2 = MAX (auditModifiedDateUtc) FROM dbo.HandlerSource WHERE HandlerId = N'MDPROBE00001';
+PRINT CONCAT (N'  rowsAffected = ', @Rows, N', observations = ', @Obs
+            , N', auditModifiedDateUtc moved = ', CASE WHEN @Stamp2 > @Stamp THEN N'YES' ELSE N'no' END
+            , CASE WHEN @Rows = 0 AND @Obs = 0 AND @Stamp2 = @Stamp
+                   THEN N'   ok  (converged)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== D-F-I. One call: ambiguous source, an unlisted version, nothing current, numeric flag ===';
+DECLARE @D NVARCHAR (MAX) = N'[{"handlerId":"MDPROBE00002","sourceType":"N","sequence":1,"currentRecord":false}
+                              ,{"handlerId":"MDPROBE00002","sourceType":"N","sequence":2,"currentRecord":true}
+                              ,{"handlerId":"MDPROBE00002","sourceType":"N","sequence":3,"currentRecord":true}
+                              ,{"handlerId":"MDPROBE00003","sourceType":"N","sequence":1,"currentRecord":true}
+                              ,{"handlerId":"MDPROBE00004","sourceType":"N","sequence":1,"currentRecord":false}
+                              ,{"handlerId":"MDPROBE00004","sourceType":"N","sequence":2,"currentRecord":false}
+                              ,{"handlerId":"MDPROBE00005","sourceType":"N","sequence":1,"currentRecord":1}]';
+EXEC dbo.uspReconcileCurrentRecord @LoadRunId = @LoadRunId, @Summaries = @D
+                                 , @RowsAffected = @Rows OUTPUT, @Observations = @Obs OUTPUT;
+PRINT CONCAT (N'  rowsAffected = ', @Rows, N', observations = ', @Obs);
+
+SELECT @Actual = STRING_AGG (CONCAT (HandlerId, N'/', Sequence, N'=', COALESCE (CAST (CurrentRecord AS NVARCHAR (1)), N'NULL')), N' ')
+                   WITHIN GROUP (ORDER BY HandlerId, Sequence)
+  FROM dbo.HandlerSource
+ WHERE HandlerId IN (N'MDPROBE00002', N'MDPROBE00003', N'MDPROBE00004', N'MDPROBE00005')
+   AND IsDeleted = 0;
+PRINT CONCAT (N'  flags = ', @Actual);
+PRINT CONCAT (N'  expected: MDPROBE00002/1=0 2=0 3=1 (highest wins), 00003/1=1 2=0 (demoted), '
+            , N'00004 both 0, 00005/1=1');
+
+PRINT N'  observations written:';
+SELECT CONCAT (N'    ', Severity, N'  ', ObservationType, N'  ', HandlerId
+             , COALESCE (N'/' + CAST (Sequence AS NVARCHAR (11)), N'')
+             , N'  [', COALESCE (ObservedValue, N''), N']')
+  FROM logs.DataQualityObservation
+ WHERE LoadRunId = @LoadRunId
+ ORDER BY DataQualityObservationId;
+
+PRINT N'  (must contain exactly one CurrentRecordAmbiguousInSource, one VersionNotInSourceSummary,';
+PRINT N'   one CurrentRecordMissingInMirror, and NO CurrentRecordAmbiguousInMirror -- the tie-break';
+PRINT N'   resolved the source contradiction before the table was measured.)';
+SELECT @Rows = COUNT (*) FROM logs.DataQualityObservation
+ WHERE LoadRunId = @LoadRunId AND ObservationType = N'CurrentRecordAmbiguousInMirror';
+PRINT CONCAT (N'  CurrentRecordAmbiguousInMirror rows = ', @Rows
+            , CASE WHEN @Rows = 0 THEN N'   ok' ELSE N'   FAIL' END);
+
+-- MDPROBE00003/2 held CurrentRecord = 1 before this reconcile demoted it. The observation must report
+-- the value it FOUND, not the value it caused; "was 0" here would mean the observation is recorded
+-- after the demotion and is describing its own effect.
+SELECT @Actual = ObservedValue FROM logs.DataQualityObservation
+ WHERE LoadRunId = @LoadRunId AND ObservationType = N'VersionNotInSourceSummary';
+PRINT CONCAT (N'  VersionNotInSourceSummary reports [', @Actual, N']'
+            , CASE WHEN @Actual = N'CurrentRecord was 1'
+                   THEN N'   ok  (the value found, not the value caused)' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== G. The unmentioned handler was not touched ===';
+SELECT @Actual = CONCAT (N'CurrentRecord=', COALESCE (CAST (CurrentRecord AS NVARCHAR (1)), N'NULL'))
+  FROM dbo.HandlerSource WHERE HandlerId = N'MDPROBE00006' AND IsDeleted = 0;
+PRINT CONCAT (N'  MDPROBE00006 ', @Actual
+            , CASE WHEN @Actual = N'CurrentRecord=1' THEN N'   ok  (out of scope, left alone)'
+                   ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== J. Comments recorded on the successful execution (the D-F-I call) ===';
+SELECT @Msg = Comments FROM logs.ExecutionLog
+ WHERE ExecutionLogId = (SELECT MAX (ExecutionLogId) FROM logs.ExecutionLog
+                          WHERE ProcedureName = N'[dbo].[uspReconcileCurrentRecord]'
+                            AND Successful = 1);
+PRINT CONCAT (N'  ', @Msg);
+
+PRINT N'';
+PRINT N'=== H. Empty array is a no-op, not an error ===';
+EXEC dbo.uspReconcileCurrentRecord @LoadRunId = @LoadRunId, @Summaries = N'[]'
+                                 , @RowsAffected = @Rows OUTPUT, @Observations = @Obs OUTPUT;
+PRINT CONCAT (N'  rowsAffected = ', @Rows, N', observations = ', @Obs
+            , CASE WHEN @Rows = 0 AND @Obs = 0 THEN N'   ok' ELSE N'   FAIL' END);
+
+PRINT N'';
+PRINT N'=== K. A closed run refuses further work ===';
+EXEC logs.uspCompleteLoadRun @LoadRunId = @LoadRunId, @Status = N'Succeeded';
+BEGIN TRY
+    EXEC dbo.uspReconcileCurrentRecord @LoadRunId = @LoadRunId, @Summaries = @B;
+    PRINT N'  FAIL: a closed run accepted work.';
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'  ok    -> ', LEFT (ERROR_MESSAGE (), 104));
+END CATCH;
+
+PRINT N'';
+PRINT N'=== Cleanup: soft delete only ===';
+UPDATE dbo.HandlerSource SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE HandlerId LIKE N'MDPROBE%';
+UPDATE logs.DataQualityObservation SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @LoadRunId;
+UPDATE logs.LoadRun SET IsDeleted = 1, auditDeletedDateUtc = SYSUTCDATETIME ()
+ WHERE LoadRunId = @LoadRunId;
+PRINT N'  done.';

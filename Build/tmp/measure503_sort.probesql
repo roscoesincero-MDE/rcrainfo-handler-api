@@ -1,0 +1,400 @@
+/***********************************************************************************************************************
+measure503_sort.sql -- the measurement 500 and 501 deferred to dbo.uspGetHandlerSourcePage.
+
+500_logs.uspGetLoadRunPage.sql:129 says: "A CASE-BASED ORDER BY CANNOT USE AN INDEX FOR ORDERING. It always sorts. ...
+That is acceptable for a table with one row per load run and a retention policy (G7); it would not be acceptable on
+dbo.HandlerSource, and dbo.uspGetHandlerSourcePage in DA4 has to be measured rather than assumed."
+501_logs.uspGetHandlerLoadStatusPage.sql:186 says the same of a page request with no filters at all.
+
+WHY THIS IS A SYNTHETIC MEASUREMENT, AND WHAT THAT COSTS. dbo.HandlerSource on this workstation holds 50 rows, all of
+them soft-deleted probe rows, so dbo.vwHandlerSource returns 0. G22 -- the initial-load volume -- is credential-gated
+and is "measured in F2", so the real row count is not knowable today. Measuring at a STATED ASSUMED volume and
+reporting the SHAPE of the curve is therefore the honest version of this obligation; a single number from the real
+table would be a number about 50 rows. Every volume below is an assumption, labelled as one.
+
+The assumed volumes: RCRAInfo holds on the order of 20,000 Maryland handlers, and dbo.HandlerSource stores one row per
+handler PER VERSION. At four versions each that is 80,000 rows; the largest case here is 400,000, which assumes 20
+versions and is deliberately pessimistic. Note the asymmetry this creates and that the measurement has to respect:
+dbo.vwHandlerSource filters CurrentRecord = 1, so the FILTERED SET is about one quarter of the table while the SCAN
+that feeds the sort is the whole table. The fixture below makes 1 row in 4 current for exactly that reason.
+
+#H is built with SELECT TOP (0) * INTO ... FROM dbo.HandlerSource, so all 218 columns carry their real types and
+therefore their real widths. Row width is not a detail here: the ORDER BY forces a scan, and the cost of a scan is
+pages, not rows. Two width scenarios bracket EPA's data instead of pretending to know it --
+  SPARSE:    only the 12 columns the grid and the filters touch are populated; the other ~200 are NULL.
+  POPULATED: the *Description, name and address columns carry strings at plausible lengths as well.
+Real data sits between the two. Row width is read off LOGICAL READS rather than off a page count: on a
+query the ORDER BY forces to scan, the reads ARE the pages, and asking tempdb for a page count directly
+would need a three-part name resolving outside RCRAInfo.
+
+There is no view over a temp table, so the queries below inline what dbo.vwHandlerSource expands to --
+IsDeleted = 0 AND CurrentRecord = 1 -- which is what the optimizer sees anyway once the view is expanded.
+
+Run: sqlcmd -S localhost -E -C -I -d RCRAInfo -y 0 -i "C:\~MDE-55TT2J4\RCRAInfo\build\tmp\measure503_sort.sql"
+Nothing here writes to a permanent table. #H is a temp table and dies with the session.
+***********************************************************************************************************************/
+
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+GO
+
+PRINT N'=== measure503_sort: the CASE-based ORDER BY on dbo.HandlerSource, at assumed volumes ===';
+GO
+
+-- Everything is one batch: #H must outlive each measurement, and GO would end its scope.
+DECLARE @Results TABLE
+(
+    ResultId     INT IDENTITY (1, 1) PRIMARY KEY
+  , Scenario     NVARCHAR (20)  NOT NULL   -- SPARSE or POPULATED
+  , TableRows    INT            NOT NULL   -- every version, which is what gets scanned
+  , VisibleRows  INT            NOT NULL   -- CurrentRecord = 1, which is what gets paged
+  , IndexSet     NVARCHAR (30)  NOT NULL
+  , OrderByForm  NVARCHAR (20)  NOT NULL   -- CASE (the procedure) or LITERAL (the control)
+  , SortBy       NVARCHAR (30)  NOT NULL
+  , Skip         INT            NOT NULL
+  , Run          INT            NOT NULL
+  , ElapsedMs    INT            NOT NULL
+  , LogicalReads BIGINT         NOT NULL
+);
+
+DECLARE @Page TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, TotalRows INT NOT NULL);
+
+DECLARE @Volumes TABLE (TableRows INT NOT NULL PRIMARY KEY);
+INSERT INTO @Volumes (TableRows) VALUES (25000), (100000), (400000);
+
+DECLARE @Scenario     NVARCHAR (20)
+      , @TableRows    INT
+      , @VisibleRows  INT
+      , @IndexSet     NVARCHAR (30)
+      , @OrderByForm  NVARCHAR (20)
+      , @SortBy       NVARCHAR (50)
+      , @SortDesc     BIT
+      , @Skip         INT
+      , @Take         INT = 50
+      , @Run          INT
+      , @T0           DATETIME2
+      , @Reads0       BIGINT
+      , @Pad          NVARCHAR (255)
+      , @Note         NVARCHAR (400);
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- The measurement, as a reusable block. T-SQL has no inner procedure, so the sequence below is repeated by hand for
+-- each cell of the grid; every repetition is identical except for @Scenario / @IndexSet / @OrderByForm / @SortBy /
+-- @Skip, which is why the loop bodies look duplicated.
+-- ---------------------------------------------------------------------------------------------------------------------
+
+DECLARE volumes CURSOR LOCAL FAST_FORWARD FOR SELECT TableRows FROM @Volumes ORDER BY TableRows;
+OPEN volumes;
+FETCH NEXT FROM volumes INTO @TableRows;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- =============================================================================================================
+    -- Build #H at this volume. Column TYPES come from the real table, so widths are real.
+    -- =============================================================================================================
+    IF OBJECT_ID (N'tempdb..#H') IS NOT NULL EXEC (N'DROP TABLE #H');   -- a temp table, not user data
+    SELECT TOP (0) * INTO #H FROM dbo.HandlerSource;
+
+    -- HandlerSourceId keeps its IDENTITY property through SELECT INTO, so it is left to generate itself.
+    -- 4 versions per handler, the last of them current: TableRows / 4 handlers, 1 row in 4 visible to the view.
+    INSERT INTO #H
+    (
+        HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted
+      , SourceTypeDescription, SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate
+      , SiteLocationCity, WasteFederalGeneratorCategoryCode
+      -- SELECT ... INTO copies nullability but NOT defaults, so the audit columns arrive NOT NULL with
+      -- nothing to fill them and every insert fails with error 515. They are supplied here rather than
+      -- redefined, because the point of building #H from the real table is that the widths stay real.
+      , auditDeletedBy, auditDeletedDateUtc, auditCreatedBy, auditCreatedDateUtc
+      , auditModifiedBy, auditModifiedDateUtc
+    )
+    SELECT N'MD' + RIGHT (N'0000000000' + CAST ((g.value - 1) / 4 + 1 AS NVARCHAR (10)), 10)
+         , N'MD'
+         , N'H'
+         , (g.value - 1) % 4 + 1
+         , CASE WHEN (g.value - 1) % 4 = 3 THEN 1 ELSE 0 END
+         , 0
+         , N'Handler notification'
+         , 1
+         , N'SYNTHETIC HANDLER ' + CAST (g.value AS NVARCHAR (11))
+         , DATEADD (DAY, -(g.value % 3650), CAST ('2026-09-05' AS DATE))
+         , DATEADD (DAY, -(g.value % 900),  CAST ('2026-09-05' AS DATE))
+         , CHOOSE ((g.value % 6) + 1, N'Baltimore', N'Annapolis', N'Rockville', N'Frederick', N'Salisbury', N'Bowie')
+         , CHOOSE ((g.value % 3) + 1, N'1', N'2', N'3')
+         , ORIGINAL_LOGIN (), SYSUTCDATETIME (), ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+         , ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+      FROM GENERATE_SERIES (1, @TableRows) AS g;
+
+    -- The indexes dbo.HandlerSource actually has today, and only those. UX_..._Natural is filtered on IsDeleted = 0,
+    -- which is the shape a soft-delete-only database needs; IX_..._Natural_All is the unfiltered twin.
+    ALTER TABLE #H ADD CONSTRAINT PK_H PRIMARY KEY CLUSTERED (HandlerSourceId);
+    CREATE UNIQUE NONCLUSTERED INDEX UX_H_Natural ON #H (HandlerId, SourceType, Sequence) WHERE IsDeleted = 0;
+    CREATE NONCLUSTERED INDEX IX_H_Natural_All ON #H (HandlerId, SourceType, Sequence);
+
+    SELECT @VisibleRows = COUNT (*) FROM #H WHERE IsDeleted = 0 AND CurrentRecord = 1;
+
+    -- Both width scenarios at every volume, so the width effect can be read off the same table.
+    DECLARE scenarios CURSOR LOCAL FAST_FORWARD FOR SELECT N'SPARSE' UNION ALL SELECT N'POPULATED';
+    OPEN scenarios;
+    FETCH NEXT FROM scenarios INTO @Scenario;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        IF @Scenario = N'POPULATED'
+        BEGIN
+            -- Plausible lengths, not maximum lengths. The nvarchar(4000) free-text columns are left NULL because
+            -- EPA's Comments field is usually empty; filling them would measure LOB overflow instead of a grid.
+            SET @Pad = REPLICATE (N'x', 40);
+
+            UPDATE #H
+               SET SiteLocationStreetNumber                = N'1234'
+                 , SiteLocationAddress1                    = @Pad
+                 , SiteLocationStateCode                   = N'MD'
+                 , SiteLocationStateDescription            = N'Maryland'
+                 , SiteLocationZip                         = N'21201-1234'
+                 , SiteLocationCountyCode                  = N'24510'
+                 , SiteLocationCountyDescription           = N'Baltimore City'
+                 , SiteLocationCountryCode                 = N'US'
+                 , SiteLocationCountryDescription          = N'United States'
+                 , LandTypeCode                            = N'P'
+                 , LandTypeDescription                     = N'Private'
+                 , SiteMailingAddressAddress1              = @Pad
+                 , SiteMailingAddressCity                  = N'Baltimore'
+                 , SiteMailingAddressStateCode             = N'MD'
+                 , SiteMailingAddressZip                   = N'21201-1234'
+                 , NaicsPrimaryCode                        = N'325199'
+                 , NaicsPrimaryDescription                 = @Pad
+                 , ContactFirstName                        = N'Synthetic'
+                 , ContactLastName                         = N'Contact'
+                 , ContactTitle                            = N'Environmental Manager'
+                 , ContactPhone                            = N'4105550100'
+                 , ContactEmail                            = N'synthetic.contact@example.invalid'
+                 , ContactAddressAddress1                  = @Pad
+                 , ContactAddressCity                      = N'Baltimore'
+                 , WasteFederalGeneratorCategoryDescription = N'Large Quantity Generator'
+                 , WasteStateGeneratorCategoryDescription   = N'Large Quantity Generator'
+                 , SrcUpdatedBy                            = N'SYNTHETIC'
+                 , SrcCreatedBy                            = N'SYNTHETIC';
+        END;
+
+        -- =========================================================================================================
+        -- Cell 1..3: the procedure's own ORDER BY -- one CASE per column per direction -- on the indexes that exist.
+        --            Three sort columns: the natural key (which an index could have served), a column no index
+        --            touches, and a date. If the CASE really defeats the index, all three cost the same.
+        -- =========================================================================================================
+        DECLARE sorts CURSOR LOCAL FAST_FORWARD FOR
+            SELECT N'HandlerId' UNION ALL SELECT N'HandlerName' UNION ALL SELECT N'SrcUpdatedDate';
+        OPEN sorts;
+        FETCH NEXT FROM sorts INTO @SortBy;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            SET @Run = 1;
+            WHILE @Run <= 3
+            BEGIN
+                DELETE FROM @Page;
+                SET @SortDesc = 0;
+                SET @Skip = 0;
+                SELECT @Reads0 = logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID;
+                SET @T0 = SYSUTCDATETIME ();
+
+                INSERT INTO @Page (Ordinal, HandlerSourceId, TotalRows)
+                SELECT p.Ordinal, p.HandlerSourceId, p.TotalRows
+                  FROM (SELECT ROW_NUMBER () OVER (
+                               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                                      , CASE WHEN @SortBy = N'ReceivedDate'   AND @SortDesc = 0 THEN h.ReceivedDate   END ASC
+                                      , CASE WHEN @SortBy = N'ReceivedDate'   AND @SortDesc = 1 THEN h.ReceivedDate   END DESC
+                                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                                      , h.HandlerSourceId ASC) AS Ordinal
+                             , h.HandlerSourceId
+                             , COUNT (*) OVER () AS TotalRows
+                          FROM #H AS h
+                         WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+                 WHERE p.Ordinal >  @Skip
+                   AND p.Ordinal <= @Skip + @Take
+                OPTION (RECOMPILE);
+
+                INSERT INTO @Results (Scenario, TableRows, VisibleRows, IndexSet, OrderByForm, SortBy, Skip, Run, ElapsedMs, LogicalReads)
+                SELECT @Scenario, @TableRows, @VisibleRows, N'as-built', N'CASE', @SortBy, @Skip, @Run
+                     , DATEDIFF (MILLISECOND, @T0, SYSUTCDATETIME ())
+                     , (SELECT logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID) - @Reads0;
+
+                SET @Run += 1;
+            END;
+
+            FETCH NEXT FROM sorts INTO @SortBy;
+        END;
+        CLOSE sorts;
+        DEALLOCATE sorts;
+
+        -- =========================================================================================================
+        -- Cell 4: the control. Identical query, ORDER BY written as a literal the index could satisfy. The gap
+        --         between this and cell 1 is the price of the CASE, isolated from the price of the scan.
+        -- =========================================================================================================
+        SET @Run = 1;
+        WHILE @Run <= 3
+        BEGIN
+            DELETE FROM @Page;
+            SELECT @Reads0 = logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID;
+            SET @T0 = SYSUTCDATETIME ();
+
+            INSERT INTO @Page (Ordinal, HandlerSourceId, TotalRows)
+            SELECT p.Ordinal, p.HandlerSourceId, p.TotalRows
+              FROM (SELECT ROW_NUMBER () OVER (ORDER BY h.HandlerId ASC, h.HandlerSourceId ASC) AS Ordinal
+                         , h.HandlerSourceId
+                         , COUNT (*) OVER () AS TotalRows
+                      FROM #H AS h
+                     WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+             WHERE p.Ordinal >  0
+               AND p.Ordinal <= 50
+            OPTION (RECOMPILE);
+
+            INSERT INTO @Results (Scenario, TableRows, VisibleRows, IndexSet, OrderByForm, SortBy, Skip, Run, ElapsedMs, LogicalReads)
+            SELECT @Scenario, @TableRows, @VisibleRows, N'as-built', N'LITERAL', N'HandlerId', 0, @Run
+                 , DATEDIFF (MILLISECOND, @T0, SYSUTCDATETIME ())
+                 , (SELECT logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID) - @Reads0;
+
+            SET @Run += 1;
+        END;
+
+        -- =========================================================================================================
+        -- Cell 5: a deep page. ROW_NUMBER has to number the whole filtered set before the outer predicate can cut
+        --         it, so page 200 should cost what page 1 costs. If it does not, the paging mechanism is the
+        --         problem rather than the sort.
+        -- =========================================================================================================
+        SET @Run = 1;
+        WHILE @Run <= 3
+        BEGIN
+            DELETE FROM @Page;
+            SET @SortBy = N'HandlerId';
+            SET @SortDesc = 0;
+            SET @Skip = 10000;
+            SELECT @Reads0 = logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID;
+            SET @T0 = SYSUTCDATETIME ();
+
+            INSERT INTO @Page (Ordinal, HandlerSourceId, TotalRows)
+            SELECT p.Ordinal, p.HandlerSourceId, p.TotalRows
+              FROM (SELECT ROW_NUMBER () OVER (
+                           ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                                  , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                                  , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                                  , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                                  , CASE WHEN @SortBy = N'ReceivedDate'   AND @SortDesc = 0 THEN h.ReceivedDate   END ASC
+                                  , CASE WHEN @SortBy = N'ReceivedDate'   AND @SortDesc = 1 THEN h.ReceivedDate   END DESC
+                                  , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                                  , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                                  , h.HandlerSourceId ASC) AS Ordinal
+                         , h.HandlerSourceId
+                         , COUNT (*) OVER () AS TotalRows
+                      FROM #H AS h
+                     WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+             WHERE p.Ordinal >  @Skip
+               AND p.Ordinal <= @Skip + @Take
+            OPTION (RECOMPILE);
+
+            INSERT INTO @Results (Scenario, TableRows, VisibleRows, IndexSet, OrderByForm, SortBy, Skip, Run, ElapsedMs, LogicalReads)
+            SELECT @Scenario, @TableRows, @VisibleRows, N'as-built', N'CASE', @SortBy, @Skip, @Run
+                 , DATEDIFF (MILLISECOND, @T0, SYSUTCDATETIME ())
+                 , (SELECT logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID) - @Reads0;
+
+            SET @Run += 1;
+        END;
+
+        -- =========================================================================================================
+        -- Cell 6: the candidate remedy. A filtered covering index on exactly what the view's predicate and the grid's
+        --         sort columns need. The sort cannot go away -- the CASE guarantees that -- but the SCAN that feeds
+        --         it can move off the 218-column clustered index and onto something narrow. Measured, not assumed.
+        -- =========================================================================================================
+        CREATE NONCLUSTERED INDEX IX_H_Grid ON #H (HandlerId)
+            INCLUDE (SourceType, Sequence, HandlerName, ReceivedDate, SrcUpdatedDate, SiteLocationCity, SourceTypeSortOrder)
+            WHERE IsDeleted = 0 AND CurrentRecord = 1;
+
+        DECLARE sorts2 CURSOR LOCAL FAST_FORWARD FOR
+            SELECT N'HandlerId' UNION ALL SELECT N'HandlerName' UNION ALL SELECT N'SrcUpdatedDate';
+        OPEN sorts2;
+        FETCH NEXT FROM sorts2 INTO @SortBy;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            SET @Run = 1;
+            WHILE @Run <= 3
+            BEGIN
+                DELETE FROM @Page;
+                SET @SortDesc = 0;
+                SET @Skip = 0;
+                SELECT @Reads0 = logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID;
+                SET @T0 = SYSUTCDATETIME ();
+
+                INSERT INTO @Page (Ordinal, HandlerSourceId, TotalRows)
+                SELECT p.Ordinal, p.HandlerSourceId, p.TotalRows
+                  FROM (SELECT ROW_NUMBER () OVER (
+                               ORDER BY CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 0 THEN h.HandlerId      END ASC
+                                      , CASE WHEN @SortBy = N'HandlerId'      AND @SortDesc = 1 THEN h.HandlerId      END DESC
+                                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 0 THEN h.HandlerName    END ASC
+                                      , CASE WHEN @SortBy = N'HandlerName'    AND @SortDesc = 1 THEN h.HandlerName    END DESC
+                                      , CASE WHEN @SortBy = N'ReceivedDate'   AND @SortDesc = 0 THEN h.ReceivedDate   END ASC
+                                      , CASE WHEN @SortBy = N'ReceivedDate'   AND @SortDesc = 1 THEN h.ReceivedDate   END DESC
+                                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 0 THEN h.SrcUpdatedDate END ASC
+                                      , CASE WHEN @SortBy = N'SrcUpdatedDate' AND @SortDesc = 1 THEN h.SrcUpdatedDate END DESC
+                                      , h.HandlerSourceId ASC) AS Ordinal
+                             , h.HandlerSourceId
+                             , COUNT (*) OVER () AS TotalRows
+                          FROM #H AS h
+                         WHERE h.IsDeleted = 0 AND h.CurrentRecord = 1) AS p
+                 WHERE p.Ordinal >  @Skip
+                   AND p.Ordinal <= @Skip + @Take
+                OPTION (RECOMPILE);
+
+                INSERT INTO @Results (Scenario, TableRows, VisibleRows, IndexSet, OrderByForm, SortBy, Skip, Run, ElapsedMs, LogicalReads)
+                SELECT @Scenario, @TableRows, @VisibleRows, N'+covering', N'CASE', @SortBy, @Skip, @Run
+                     , DATEDIFF (MILLISECOND, @T0, SYSUTCDATETIME ())
+                     , (SELECT logical_reads FROM sys.dm_exec_sessions WHERE session_id = @@SPID) - @Reads0;
+
+                SET @Run += 1;
+            END;
+
+            FETCH NEXT FROM sorts2 INTO @SortBy;
+        END;
+        CLOSE sorts2;
+        DEALLOCATE sorts2;
+
+        DROP INDEX IX_H_Grid ON #H;   -- an index on a temp table, so the next scenario starts from as-built
+
+        FETCH NEXT FROM scenarios INTO @Scenario;
+    END;
+    CLOSE scenarios;
+    DEALLOCATE scenarios;
+
+    FETCH NEXT FROM volumes INTO @TableRows;
+END;
+CLOSE volumes;
+DEALLOCATE volumes;
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Results. Best of three runs, because run 1 carries the OPTION (RECOMPILE) compile and the first touch of the pages;
+-- the worst is reported beside it so a reader can see how much of the cost is the compile.
+-- ---------------------------------------------------------------------------------------------------------------------
+PRINT N'';
+PRINT N'--- best of 3, milliseconds and logical reads --------------------------------------------------------------';
+SELECT r.Scenario
+     , r.TableRows
+     , r.VisibleRows
+     , r.IndexSet
+     , r.OrderByForm
+     , r.SortBy
+     , r.Skip
+     , MIN (r.ElapsedMs)    AS BestMs
+     , MAX (r.ElapsedMs)    AS WorstMs
+     , MIN (r.LogicalReads) AS BestReads
+  FROM @Results AS r
+ GROUP BY r.Scenario, r.TableRows, r.VisibleRows, r.IndexSet, r.OrderByForm, r.SortBy, r.Skip
+ ORDER BY r.TableRows, r.Scenario DESC, r.IndexSet, r.OrderByForm, r.SortBy, r.Skip;
+GO
+
+PRINT N'';
+PRINT N'measure503_sort: done. #H dies with this session; nothing permanent was written.';
+GO

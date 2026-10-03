@@ -1,0 +1,653 @@
+/***********************************************************************************************************************
+da4_gethandlersourcepage.probesql -- dbo.uspGetHandlerSourcePage (script 503).
+
+Run: sqlcmd -S localhost -E -C -I -d RCRAInfo -y 0 -i "C:\~MDE-55TT2J4\RCRAInfo\build\tmp\da4_gethandlersourcepage.probesql"
+-I is REQUIRED. dbo.HandlerSource carries a filtered unique index (UX_dbo_HandlerSource_Natural), and any write to a
+table with one needs SET QUOTED_IDENTIFIER ON or the insert fails with error 1934 naming indexed views.
+
+CONVENTIONS THIS FILE FOLLOWS, ALL OF THEM LOAD-BEARING:
+
+  * Every fixture row uses an MDPROBE0503% HandlerId, so the reset and the cleanup can find them without touching a
+    real handler.
+  * SOFT DELETE ONLY. There is no hard delete anywhere in this database, so cleanup sets IsDeleted = 1 and the fixture
+    rows stay. The reset at the top retires anything a previous run left visible, which is what makes this file
+    re-runnable.
+  * REFUSALS use plain EXEC and successes use INSERT ... EXEC. That is not stylistic: INSERT ... EXEC opens a
+    transaction, and a procedure that throws inside one leaves the transaction doomed (error 3930), so the CATCH cannot
+    write its log row and the [R15] assertions below would measure nothing. See section A2.
+  * INSERT ... EXEC IS ITSELF AN ASSERTION. #Page names all 22 columns in order, so a change to the projection's
+    column list, order, or types fails the insert rather than passing silently. It also succeeds on an EMPTY result set
+    and fails on a MISSING one, which a row count cannot tell apart.
+  * ORDER is asserted with STRING_AGG over Ordinal, compared against a hand-computed expected string. The expectations
+    are derived from the fixture by hand rather than by re-running the procedure's own predicate, so a wrong answer
+    cannot agree with itself.
+
+WHAT THE FIXTURE IS. Six VISIBLE rows and three that must never appear:
+
+  #  HandlerId      Src Seq  HandlerName        Received    SrcUpdated  City        Gen  SortOrder
+  1  MDPROBE05031   A   1    ZEBRA WORKS        2024-01-15  2026-01-10  Baltimore   1    30
+  2  MDPROBE05032   B   1    ALPHA CHEMICAL     2024-03-20  2026-02-15  Annapolis   2    20
+  3  MDPROBE05033   C   1    MIDLAND PLATING    2023-11-05  2026-03-01  Rockville   1    10
+  4  MDPROBE05034   A   1    ALPHA CHEMICAL     2024-03-20  2026-04-12  Baltimore   3    30
+  5  MDPROBE05035   D   1    NULLSORT CO        2025-06-01  2026-05-20  Frederick   1    NULL
+  6  MDPROBE05036   B   2    BETA RECYCLING     2025-08-14  2026-06-30  Salisbury   2    20
+  7  MDPROBE05037   A   1    HIDDEN SOFTDELETE      -- IsDeleted = 1
+  8  MDPROBE05038   A   1    HIDDEN NOTCURRENT      -- CurrentRecord = 0
+  9  MDPROBE05039   A   1    HIDDEN NULLCURRENT     -- CurrentRecord = NULL
+
+Rows 2 and 4 share a HandlerName AND a ReceivedDate, which is what makes the tiebreaker assertions mean something.
+Row 5 carries a NULL SourceTypeSortOrder, which is the case the SourceType sort has to order deterministically.
+Rows 7 to 9 are the three separate ways dbo.vwHandlerSource excludes a row, and each is asserted separately -- 8 and 9
+in particular, because `CurrentRecord = 1` excludes NULL and that is easy to get wrong when reading the view.
+
+ActivityLocation is 'MD' on every row. No fixture row carries an out-of-state activityLocation: MDE's decision is that
+out-of-state values appear on contacts and mailing addresses and never on activityLocation itself, so the negative test
+below asks for 'VA' and expects nothing rather than inserting a 'VA' row.
+
+dbo.HandlerSource holds 50 rows on this workstation, ALL soft-deleted, so dbo.vwHandlerSource exposes none of them and
+the unfiltered totals asserted below are exactly the fixture's six. Section B cross-checks that against the view rather
+than trusting the constant.
+***********************************************************************************************************************/
+
+SET NOCOUNT ON;
+SET XACT_ABORT OFF;   -- the refusal sections need the batch to continue after a caught error
+GO
+
+PRINT N'=== da4_gethandlersourcepage: dbo.uspGetHandlerSourcePage ===';
+GO
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Reset. Retire anything a previous run left visible. Soft delete only.
+-- ---------------------------------------------------------------------------------------------------------------------
+UPDATE dbo.HandlerSource
+   SET IsDeleted             = 1
+     , auditDeletedBy        = ORIGINAL_LOGIN ()
+     , auditDeletedDateUtc   = SYSUTCDATETIME ()
+     , auditModifiedBy       = ORIGINAL_LOGIN ()
+     , auditModifiedDateUtc  = SYSUTCDATETIME ()
+ WHERE HandlerId LIKE N'MDPROBE0503%'
+   AND IsDeleted = 0;
+PRINT CONCAT (N'reset: retired ', @@ROWCOUNT, N' leftover fixture row(s).');
+GO
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Fixture.
+-- ---------------------------------------------------------------------------------------------------------------------
+INSERT INTO dbo.HandlerSource
+    (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted
+   , SourceTypeDescription, SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate
+   , SiteLocationAddress1, SiteLocationCity, SiteLocationStateCode, SiteLocationZip
+   , SiteLocationCountyDescription, WasteFederalGeneratorCategoryCode
+   , WasteFederalGeneratorCategoryDescription, WasteTsd, WasteTransporter, WasteRecyclerActivity)
+VALUES
+  (N'MDPROBE05031', N'MD', N'A', 1, 1, 0, N'Notification',   30, N'ZEBRA WORKS',        '2024-01-15', '2026-01-10', N'1 Zebra St',   N'Baltimore', N'MD', N'21201', N'Baltimore City',    N'1', N'LQG',  1, 0, 0)
+, (N'MDPROBE05032', N'MD', N'B', 1, 1, 0, N'Part A',         20, N'ALPHA CHEMICAL',     '2024-03-20', '2026-02-15', N'2 Alpha Rd',   N'Annapolis', N'MD', N'21401', N'Anne Arundel',      N'2', N'SQG',  0, 1, 0)
+, (N'MDPROBE05033', N'MD', N'C', 1, 1, 0, N'Permit',         10, N'MIDLAND PLATING',    '2023-11-05', '2026-03-01', N'3 Midland Ave',N'Rockville', N'MD', N'20850', N'Montgomery',        N'1', N'LQG',  0, 0, 1)
+, (N'MDPROBE05034', N'MD', N'A', 1, 1, 0, N'Notification',   30, N'ALPHA CHEMICAL',     '2024-03-20', '2026-04-12', N'4 Alpha Rd',   N'Baltimore', N'MD', N'21202', N'Baltimore City',    N'3', N'VSQG', 0, 0, 0)
+, (N'MDPROBE05035', N'MD', N'D', 1, 1, 0, NULL,            NULL, N'NULLSORT CO',        '2025-06-01', '2026-05-20', N'5 Null Way',   N'Frederick', N'MD', N'21701', N'Frederick',         N'1', N'LQG',  0, 0, 0)
+, (N'MDPROBE05036', N'MD', N'B', 2, 1, 0, N'Part A',         20, N'BETA RECYCLING',     '2025-08-14', '2026-06-30', N'6 Beta Blvd',  N'Salisbury', N'MD', N'21801', N'Wicomico',          N'2', N'SQG',  0, 0, 1)
+  -- The three exclusions. 7 is soft-deleted, 8 is a superseded version, 9 was never stamped by the reconcile pass.
+, (N'MDPROBE05037', N'MD', N'A', 1,    1, 1, N'Notification', 30, N'HIDDEN SOFTDELETE',  '2024-01-15', '2026-01-10', N'7 Gone St',    N'Baltimore', N'MD', N'21201', N'Baltimore City',   N'1', N'LQG',  0, 0, 0)
+, (N'MDPROBE05038', N'MD', N'A', 1,    0, 0, N'Notification', 30, N'HIDDEN NOTCURRENT', '2024-01-15', '2026-01-10', N'8 Old St',     N'Baltimore', N'MD', N'21201', N'Baltimore City',   N'1', N'LQG',  0, 0, 0)
+, (N'MDPROBE05039', N'MD', N'A', 1, NULL, 0, N'Notification', 30, N'HIDDEN NULLCURRENT','2024-01-15', '2026-01-10', N'9 Unstamped St',N'Baltimore',N'MD', N'21201', N'Baltimore City',   N'1', N'LQG',  0, 0, 0);
+PRINT CONCAT (N'fixture: inserted ', @@ROWCOUNT, N' row(s).');
+GO
+
+-- The shape assertion. All 22 columns, in the procedure's order.
+CREATE TABLE #Page
+(
+    Ordinal                                  INT            NOT NULL PRIMARY KEY
+  , HandlerSourceId                          INT            NOT NULL
+  , HandlerId                                NVARCHAR (12)  NOT NULL
+  , ActivityLocation                         NVARCHAR (2)   NOT NULL
+  , SourceType                               NVARCHAR (1)   NOT NULL
+  , SourceTypeDescription                    NVARCHAR (255) NULL
+  , Sequence                                 INT            NOT NULL
+  , ReceivedDate                             DATE           NULL
+  , HandlerName                              NVARCHAR (80)  NULL
+  , SiteLocationAddress1                     NVARCHAR (50)  NULL
+  , SiteLocationCity                         NVARCHAR (25)  NULL
+  , SiteLocationStateCode                    NVARCHAR (2)   NULL
+  , SiteLocationZip                          NVARCHAR (14)  NULL
+  , SiteLocationCountyDescription            NVARCHAR (255) NULL
+  , WasteFederalGeneratorCategoryCode        NVARCHAR (1)   NULL
+  , WasteFederalGeneratorCategoryDescription NVARCHAR (255) NULL
+  , WasteTsd                                 BIT            NULL
+  , WasteTransporter                         BIT            NULL
+  , WasteRecyclerActivity                    BIT            NULL
+  , SrcUpdatedDate                           DATE           NULL
+  , auditModifiedDateUtc                     DATETIME2      NOT NULL
+  , TotalRows                                INT            NOT NULL
+);
+GO
+
+-- =====================================================================================================================
+-- A. Refusals. Plain EXEC, never INSERT ... EXEC -- see the header.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- A. refusals ---';
+GO
+BEGIN TRY
+    EXEC dbo.uspGetHandlerSourcePage @SortBy = N'HandlerID_typo';
+    PRINT N'FAIL A1: a @SortBy outside the whitelist returned rows instead of throwing.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%is not a sortable column of this grid%'
+       AND ERROR_MESSAGE () LIKE N'%rejected rather than defaulted%'
+        PRINT N'PASS A1: an unrecognised @SortBy is refused, and the message says why it is not defaulted.';
+    ELSE
+        PRINT CONCAT (N'FAIL A1: wrong message -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+BEGIN TRY
+    EXEC dbo.uspGetHandlerSourcePage @SortBy = NULL;
+    PRINT N'FAIL A2: @SortBy = NULL returned rows instead of throwing.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%@SortBy = NULL is not a sortable column%'
+        PRINT N'PASS A2: @SortBy = NULL is refused and the message renders NULL as NULL, not as an empty string.';
+    ELSE
+        PRINT CONCAT (N'FAIL A2: wrong message -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+-- Case-insensitivity is the other half of the whitelist: a JavaScript grid sends lower camel case.
+BEGIN TRY
+    DECLARE @n INT;
+    CREATE TABLE #ci (a INT, b INT, c NVARCHAR (12), d NVARCHAR (2), e NVARCHAR (1), f NVARCHAR (255)
+                    , g INT, h DATE, i NVARCHAR (80), j NVARCHAR (50), k NVARCHAR (25), l NVARCHAR (2)
+                    , m NVARCHAR (14), n NVARCHAR (255), o NVARCHAR (1), p NVARCHAR (255), q BIT, r BIT
+                    , s BIT, t DATE, u DATETIME2, v INT);
+    INSERT INTO #ci EXEC dbo.uspGetHandlerSourcePage @SortBy = N'handlerName';
+    SELECT @n = COUNT (*) FROM #ci;
+    IF @n = 6 PRINT N'PASS A3: @SortBy is matched case-insensitively, so ''handlerName'' is accepted.';
+    ELSE      PRINT CONCAT (N'FAIL A3: expected 6 rows, got ', @n);
+    DROP TABLE #ci;
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'FAIL A3: ''handlerName'' was refused -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+BEGIN TRY
+    EXEC dbo.uspGetHandlerSourcePage @ReceivedFromDate = '2025-01-01', @ReceivedToDate = '2024-01-01';
+    PRINT N'FAIL A4: an inverted received-date range returned rows instead of throwing.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%is later than @ReceivedToDate%'
+       AND ERROR_MESSAGE () LIKE N'%cannot match a row for any data%'
+        PRINT N'PASS A4: an inverted received-date range is refused as arithmetic, not returned as an empty page.';
+    ELSE
+        PRINT CONCAT (N'FAIL A4: wrong message -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+BEGIN TRY
+    EXEC dbo.uspGetHandlerSourcePage @SrcUpdatedFromDate = '2026-12-31', @SrcUpdatedToDate = '2026-01-01';
+    PRINT N'FAIL A5: an inverted SrcUpdated range returned rows instead of throwing.';
+END TRY
+BEGIN CATCH
+    IF ERROR_MESSAGE () LIKE N'%is later than @SrcUpdatedToDate%'
+        PRINT N'PASS A5: an inverted SrcUpdated range is refused.';
+    ELSE
+        PRINT CONCAT (N'FAIL A5: wrong message -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+-- An EQUAL pair is a one-day window and must NOT be refused. The boundary matters: `>` not `>=`.
+BEGIN TRY
+    DECLARE @n INT;
+    CREATE TABLE #eq (a INT, b INT, c NVARCHAR (12), d NVARCHAR (2), e NVARCHAR (1), f NVARCHAR (255)
+                    , g INT, h DATE, i NVARCHAR (80), j NVARCHAR (50), k NVARCHAR (25), l NVARCHAR (2)
+                    , m NVARCHAR (14), n NVARCHAR (255), o NVARCHAR (1), p NVARCHAR (255), q BIT, r BIT
+                    , s BIT, t DATE, u DATETIME2, v INT);
+    INSERT INTO #eq EXEC dbo.uspGetHandlerSourcePage @ReceivedFromDate = '2024-03-20', @ReceivedToDate = '2024-03-20';
+    SELECT @n = COUNT (*) FROM #eq;
+    IF @n = 2 PRINT N'PASS A6: From = To is a one-day window and returns its 2 rows, not a refusal.';
+    ELSE      PRINT CONCAT (N'FAIL A6: expected 2 rows for the single-day window, got ', @n);
+    DROP TABLE #eq;
+END TRY
+BEGIN CATCH
+    PRINT CONCAT (N'FAIL A6: From = To was refused -- ', ERROR_MESSAGE ());
+END CATCH;
+GO
+
+-- =====================================================================================================================
+-- A2. [R15]. Every refusal above must have left an ORPHAN row in logs.ExecutionLog: this procedure writes no start
+--     row, so the CATCH inserts rather than updates. That is the whole point of the instrumentation -- a read that
+--     fails and records nothing is the defect this project exists to prevent.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- A2. the error rows the refusals had to write ---';
+GO
+DECLARE @Orphans INT, @Bad INT, @NoElapsed INT;
+
+SELECT @Orphans = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspGetHandlerSourcePage]'
+   AND Successful    = 0
+   AND StartDateUtc >= DATEADD (MINUTE, -10, SYSUTCDATETIME ());
+
+IF @Orphans >= 4 PRINT CONCAT (N'PASS A2.1: the refusals recorded themselves -- ', @Orphans, N' error row(s).');
+ELSE             PRINT CONCAT (N'FAIL A2.1: expected at least 4 error rows, found ', @Orphans);
+
+-- The orphan signature: Successful = 0, EndDateUtc set, ElapsedMilliseconds NULL. The NULL is what identifies an
+-- orphan, so a value there would make one indistinguishable from a closed-out row.
+SELECT @Bad = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName        = N'[dbo].[uspGetHandlerSourcePage]'
+   AND Successful           = 0
+   AND StartDateUtc        >= DATEADD (MINUTE, -10, SYSUTCDATETIME ())
+   AND ElapsedMilliseconds IS NOT NULL;
+IF @Bad = 0 PRINT N'PASS A2.2: every error row is a true orphan -- ElapsedMilliseconds is NULL, which is its signature.';
+ELSE        PRINT CONCAT (N'FAIL A2.2: ', @Bad, N' error row(s) carry an ElapsedMilliseconds they cannot have earned.');
+
+-- ...so the duration has to be recoverable from somewhere, and the CATCH puts it in ContextMessage.
+SELECT @NoElapsed = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName   = N'[dbo].[uspGetHandlerSourcePage]'
+   AND Successful      = 0
+   AND StartDateUtc   >= DATEADD (MINUTE, -10, SYSUTCDATETIME ())
+   AND COALESCE (ContextMessage, N'') NOT LIKE N'%ElapsedMs=%';
+IF @NoElapsed = 0 PRINT N'PASS A2.3: every error row carries ElapsedMs= in ContextMessage, so the duration is not lost.';
+ELSE              PRINT CONCAT (N'FAIL A2.3: ', @NoElapsed, N' error row(s) have no ElapsedMs= in ContextMessage.');
+
+-- KeyParameters must record what the CALLER sent, so a bad @SortBy is visible in it verbatim.
+IF EXISTS (SELECT 1 FROM logs.ExecutionLog
+            WHERE ProcedureName = N'[dbo].[uspGetHandlerSourcePage]'
+              AND Successful    = 0
+              AND KeyParameters LIKE N'%SortBy=HandlerID_typo%')
+    PRINT N'PASS A2.4: KeyParameters records the rejected @SortBy as the caller sent it.';
+ELSE
+    PRINT N'FAIL A2.4: no error row records the rejected @SortBy in KeyParameters.';
+
+-- A NULL argument must log as (any)/(null), never as an empty string -- CONCAT renders NULL as '', which would make
+-- the message read as truncated rather than as absent.
+IF EXISTS (SELECT 1 FROM logs.ExecutionLog
+            WHERE ProcedureName = N'[dbo].[uspGetHandlerSourcePage]'
+              AND Successful    = 0
+              AND KeyParameters LIKE N'%HandlerId=(any)%')
+    PRINT N'PASS A2.5: omitted filters log as (any) rather than as an empty string.';
+ELSE
+    PRINT N'FAIL A2.5: an omitted filter did not log as (any).';
+GO
+
+-- =====================================================================================================================
+-- A3. G37. A CATCH inside a transaction the CALLER owns cannot write its log row at all: XACT_ABORT ON dooms the
+--     transaction (error 3930) and the insert is impossible by any means. This is measured rather than assumed, and
+--     the assertion is written to SHOUT if the answer ever changes.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- A3. G37, the boundary this procedure cannot cross ---';
+GO
+DECLARE @Before INT, @After INT, @State INT;
+SELECT @Before = COUNT (*) FROM logs.ExecutionLog WHERE ProcedureName = N'[dbo].[uspGetHandlerSourcePage]';
+
+BEGIN TRANSACTION;   -- the CALLER's transaction, which this procedure must never roll back
+BEGIN TRY
+    EXEC dbo.uspGetHandlerSourcePage @SortBy = N'nope';
+END TRY
+BEGIN CATCH
+    SET @State = XACT_STATE ();
+END CATCH;
+IF XACT_STATE () <> 0 ROLLBACK TRANSACTION;
+
+SELECT @After = COUNT (*) FROM logs.ExecutionLog WHERE ProcedureName = N'[dbo].[uspGetHandlerSourcePage]';
+
+IF @State = -1 AND @After = @Before
+    PRINT CONCAT (N'PASS A3.1: inside a caller''s transaction XACT_STATE = ', @State
+                , N' and 0 rows were recorded. That is G37, still open and still documented.');
+ELSE IF @After > @Before
+    PRINT CONCAT (N'CHANGED A3.1: something now CAN record here (', @After - @Before
+                , N' row(s), XACT_STATE = ', @State, N'). G37 may be resolved -- update the docs.');
+ELSE
+    PRINT CONCAT (N'FAIL A3.1: unexpected state ', COALESCE (CAST (@State AS NVARCHAR (11)), N'(null)'));
+GO
+
+-- =====================================================================================================================
+-- B. The default page, and TotalRows cross-checked against the view rather than against a constant.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- B. the default page ---';
+GO
+DELETE FROM #Page;
+INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage;   -- succeeds only if all 22 columns still match, in order
+GO
+DECLARE @Rows INT, @Total INT, @Independent INT, @Order NVARCHAR (400);
+SELECT @Rows = COUNT (*), @Total = MAX (TotalRows) FROM #Page;
+SELECT @Independent = COUNT (*) FROM dbo.vwHandlerSource;
+
+IF @Rows = 6 PRINT N'PASS B1: the default call returns the fixture''s 6 visible rows.';
+ELSE         PRINT CONCAT (N'FAIL B1: expected 6 rows, got ', @Rows);
+
+IF @Total = @Independent
+    PRINT CONCAT (N'PASS B2: TotalRows (', @Total, N') equals an independent COUNT (*) over dbo.vwHandlerSource.');
+ELSE
+    PRINT CONCAT (N'FAIL B2: TotalRows = ', @Total, N' but the view holds ', @Independent, N' visible row(s).');
+
+IF EXISTS (SELECT 1 FROM #Page GROUP BY TotalRows HAVING COUNT (*) = 6)
+    PRINT N'PASS B3: TotalRows is the same on every row, which is what a scalar rather than a window function means.';
+ELSE
+    PRINT N'FAIL B3: TotalRows differs between rows on one page.';
+
+-- Ordinal must be 1..n with no gaps, because the grid's "showing 51-75 of 340" caption reads it directly.
+IF (SELECT COUNT (*) FROM #Page WHERE Ordinal BETWEEN 1 AND 6) = 6 AND (SELECT MIN (Ordinal) FROM #Page) = 1
+    PRINT N'PASS B4: Ordinal is 1..6 with no gaps.';
+ELSE
+    PRINT N'FAIL B4: Ordinal is not a gapless 1..6.';
+
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05031,MDPROBE05032,MDPROBE05033,MDPROBE05034,MDPROBE05035,MDPROBE05036'
+    PRINT N'PASS B5: the default sort is HandlerId ascending.';
+ELSE
+    PRINT CONCAT (N'FAIL B5: default order was ', @Order);
+GO
+
+-- =====================================================================================================================
+-- C. The projection. 22 named columns in order, and NO contact PII.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- C. the projection ---';
+GO
+DECLARE @Actual NVARCHAR (MAX), @Expected NVARCHAR (MAX), @Leaked NVARCHAR (400);
+
+SELECT @Actual = STRING_AGG (r.name, N',') WITHIN GROUP (ORDER BY r.column_ordinal)
+  FROM sys.dm_exec_describe_first_result_set (N'EXEC dbo.uspGetHandlerSourcePage', NULL, 0) AS r;
+
+SET @Expected = N'Ordinal,HandlerSourceId,HandlerId,ActivityLocation,SourceType,SourceTypeDescription,Sequence,'
+              + N'ReceivedDate,HandlerName,SiteLocationAddress1,SiteLocationCity,SiteLocationStateCode,'
+              + N'SiteLocationZip,SiteLocationCountyDescription,WasteFederalGeneratorCategoryCode,'
+              + N'WasteFederalGeneratorCategoryDescription,WasteTsd,WasteTransporter,WasteRecyclerActivity,'
+              + N'SrcUpdatedDate,auditModifiedDateUtc,TotalRows';
+
+IF @Actual = @Expected PRINT N'PASS C1: the projection is exactly the 22 documented columns, in order.';
+ELSE                   PRINT CONCAT (N'FAIL C1: the projection changed. Got: ', @Actual);
+
+-- The PII exclusion, asserted by NAME rather than by counting. Contact columns, SrcUpdatedBy (an EPA user) and
+-- IsDeleted (a constant 0 through this view) must all be absent.
+SELECT @Leaked = STRING_AGG (r.name, N',')
+  FROM sys.dm_exec_describe_first_result_set (N'EXEC dbo.uspGetHandlerSourcePage', NULL, 0) AS r
+ WHERE r.name LIKE N'Contact%'
+    OR r.name LIKE N'%ContactEmail%'
+    OR r.name LIKE N'%ContactPhone%'
+    OR r.name IN (N'SrcUpdatedBy', N'SrcCreatedBy', N'IsDeleted', N'auditDeletedBy', N'auditDeletedDateUtc');
+
+IF @Leaked IS NULL
+    PRINT N'PASS C2: no contact PII, no EPA user name, and no constant IsDeleted in the grid projection.';
+ELSE
+    PRINT CONCAT (N'FAIL C2: the grid now returns ', @Leaked);
+GO
+
+-- =====================================================================================================================
+-- D. Every filter, TotalRows against a hand-computed expectation. This is the check the header promises: the WHERE
+--    clause is written TWICE in 503, and a filter added to one copy and not the other makes TotalRows a count of a
+--    different set than the page. Both are asserted on every row here.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- D. the filters, and the two copies of the WHERE clause agreeing ---';
+GO
+DECLARE @Label NVARCHAR (60), @Expect INT, @Rows INT, @Total INT;
+
+-- D1 HandlerId
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @HandlerId = N'MDPROBE05031';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 1 AND @Total = 1 PRINT N'PASS D1: @HandlerId matches its one row and TotalRows agrees.';
+ELSE PRINT CONCAT (N'FAIL D1: rows=', @Rows, N' total=', @Total, N' expected 1/1');
+
+-- D2 ActivityLocation, both directions
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @ActivityLocation = N'MD';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 6 AND @Total = 6 PRINT N'PASS D2: @ActivityLocation = MD matches all 6.';
+ELSE PRINT CONCAT (N'FAIL D2: rows=', @Rows, N' total=', @Total, N' expected 6/6');
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @ActivityLocation = N'VA';
+SELECT @Rows = COUNT (*) FROM #Page;
+IF @Rows = 0 PRINT N'PASS D3: an unmatched @ActivityLocation returns an empty page rather than throwing -- it is not a closed set.';
+ELSE PRINT CONCAT (N'FAIL D3: expected 0 rows for VA, got ', @Rows);
+
+-- D4 SourceType. Also not a closed set: an unknown code must return nothing, not refuse.
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SourceType = N'A';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 2 AND @Total = 2 PRINT N'PASS D4: @SourceType = A matches its 2 rows.';
+ELSE PRINT CONCAT (N'FAIL D4: rows=', @Rows, N' total=', @Total, N' expected 2/2');
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SourceType = N'Z';
+SELECT @Rows = COUNT (*) FROM #Page;
+IF @Rows = 0 PRINT N'PASS D5: an unknown @SourceType returns nothing rather than refusing -- dbo.HandlerSource closes no set.';
+ELSE PRINT CONCAT (N'FAIL D5: expected 0 rows for SourceType Z, got ', @Rows);
+
+-- D6 generator category
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @FederalGeneratorCategory = N'1';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 3 AND @Total = 3 PRINT N'PASS D6: @FederalGeneratorCategory = 1 matches its 3 rows.';
+ELSE PRINT CONCAT (N'FAIL D6: rows=', @Rows, N' total=', @Total, N' expected 3/3');
+
+-- D7/D8 received-date bounds, each on its own, so an omitted bound is proved not to filter
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @ReceivedFromDate = '2024-01-01';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 5 AND @Total = 5 PRINT N'PASS D7: @ReceivedFromDate alone is inclusive and matches 5.';
+ELSE PRINT CONCAT (N'FAIL D7: rows=', @Rows, N' total=', @Total, N' expected 5/5');
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @ReceivedToDate = '2024-03-20';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 4 AND @Total = 4 PRINT N'PASS D8: @ReceivedToDate alone is inclusive and matches 4.';
+ELSE PRINT CONCAT (N'FAIL D8: rows=', @Rows, N' total=', @Total, N' expected 4/4');
+
+-- D9 both bounds together
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @ReceivedFromDate = '2024-01-01', @ReceivedToDate = '2024-12-31';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 3 AND @Total = 3 PRINT N'PASS D9: the received-date window matches its 3 rows.';
+ELSE PRINT CONCAT (N'FAIL D9: rows=', @Rows, N' total=', @Total, N' expected 3/3');
+
+-- D10/D11 SrcUpdated bounds
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SrcUpdatedFromDate = '2026-03-01';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 4 AND @Total = 4 PRINT N'PASS D10: @SrcUpdatedFromDate matches its 4 rows.';
+ELSE PRINT CONCAT (N'FAIL D10: rows=', @Rows, N' total=', @Total, N' expected 4/4');
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SrcUpdatedToDate = '2026-02-15';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 2 AND @Total = 2 PRINT N'PASS D11: @SrcUpdatedToDate matches its 2 rows.';
+ELSE PRINT CONCAT (N'FAIL D11: rows=', @Rows, N' total=', @Total, N' expected 2/2');
+
+-- D12 two different filters together, which is where a missing AND in one copy would show
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SourceType = N'A', @FederalGeneratorCategory = N'1';
+SELECT @Rows = COUNT (*), @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+IF @Rows = 1 AND @Total = 1 PRINT N'PASS D12: two filters combine, and both copies of the WHERE clause agree.';
+ELSE PRINT CONCAT (N'FAIL D12: rows=', @Rows, N' total=', @Total, N' expected 1/1');
+GO
+
+-- =====================================================================================================================
+-- E. Sorting. Order asserted as a string, against expectations computed by hand from the fixture table in the header.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- E. sorting, including the tiebreaker and the SourceType special case ---';
+GO
+DECLARE @Order NVARCHAR (400);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SortBy = N'HandlerName', @SortDescending = 0;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05032,MDPROBE05034,MDPROBE05036,MDPROBE05033,MDPROBE05035,MDPROBE05031'
+    PRINT N'PASS E1: HandlerName ascending, with the two ALPHA CHEMICAL rows broken by HandlerSourceId ascending.';
+ELSE PRINT CONCAT (N'FAIL E1: ', @Order);
+
+-- The tiebreaker does NOT flip with @SortDescending -- it only has to be deterministic. So the two ALPHA rows stay in
+-- 32,34 order even though everything around them reverses.
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SortBy = N'HandlerName', @SortDescending = 1;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05031,MDPROBE05035,MDPROBE05033,MDPROBE05036,MDPROBE05032,MDPROBE05034'
+    PRINT N'PASS E2: HandlerName descending reverses, and the tiebreaker stays ASCENDING as the header claims.';
+ELSE PRINT CONCAT (N'FAIL E2: ', @Order);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SortBy = N'ReceivedDate', @SortDescending = 0;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05033,MDPROBE05031,MDPROBE05032,MDPROBE05034,MDPROBE05035,MDPROBE05036'
+    PRINT N'PASS E3: ReceivedDate ascending, with the shared 2024-03-20 broken by the surrogate key.';
+ELSE PRINT CONCAT (N'FAIL E3: ', @Order);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SortBy = N'SrcUpdatedDate', @SortDescending = 1;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05036,MDPROBE05035,MDPROBE05034,MDPROBE05033,MDPROBE05032,MDPROBE05031'
+    PRINT N'PASS E4: SrcUpdatedDate descending -- the "what did EPA change lately" sort.';
+ELSE PRINT CONCAT (N'FAIL E4: ', @Order);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SortBy = N'SiteLocationCity', @SortDescending = 0;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05032,MDPROBE05031,MDPROBE05034,MDPROBE05035,MDPROBE05033,MDPROBE05036'
+    PRINT N'PASS E5: SiteLocationCity ascending, with the two Baltimore rows broken by the surrogate key.';
+ELSE PRINT CONCAT (N'FAIL E5: ', @Order);
+
+-- The one column where the value SORTED is not the value SHOWN. SourceTypeSortOrder is 10,20,20,30,30,NULL, and NULL
+-- sorts first ascending -- so the row with no lookup entry leads, which is deliberate and is what this asserts.
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @SortBy = N'SourceType', @SortDescending = 0;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05035,MDPROBE05033,MDPROBE05032,MDPROBE05036,MDPROBE05031,MDPROBE05034'
+    PRINT N'PASS E6: SourceType sorts by SourceTypeSortOrder (NULL first), then the code, then the surrogate key.';
+ELSE PRINT CONCAT (N'FAIL E6: ', @Order);
+GO
+
+-- =====================================================================================================================
+-- F. Paging. Pages must partition the ordered set exactly: no row on two pages, no row on none.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- F. paging ---';
+GO
+CREATE TABLE #All (Src NVARCHAR (10), Ordinal INT, HandlerId NVARCHAR (12), TotalRows INT);
+GO
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Skip = 0, @Take = 2;
+INSERT INTO #All SELECT N'p1', Ordinal, HandlerId, TotalRows FROM #Page;
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Skip = 2, @Take = 2;
+INSERT INTO #All SELECT N'p2', Ordinal, HandlerId, TotalRows FROM #Page;
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Skip = 4, @Take = 2;
+INSERT INTO #All SELECT N'p3', Ordinal, HandlerId, TotalRows FROM #Page;
+GO
+DECLARE @Order NVARCHAR (400), @Rows INT, @Distinct INT, @Totals INT;
+SELECT @Rows = COUNT (*), @Distinct = COUNT (DISTINCT HandlerId), @Totals = COUNT (DISTINCT TotalRows) FROM #All;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #All;
+
+IF @Rows = 6 AND @Distinct = 6
+    PRINT N'PASS F1: three pages of 2 partition the set -- 6 rows, 6 distinct, nothing repeated and nothing skipped.';
+ELSE PRINT CONCAT (N'FAIL F1: rows=', @Rows, N' distinct=', @Distinct);
+
+IF @Order = N'MDPROBE05031,MDPROBE05032,MDPROBE05033,MDPROBE05034,MDPROBE05035,MDPROBE05036'
+    PRINT N'PASS F2: Ordinal is absolute across pages, so concatenating them reproduces the full order.';
+ELSE PRINT CONCAT (N'FAIL F2: ', @Order);
+
+IF @Totals = 1 PRINT N'PASS F3: TotalRows is the filtered total, not the page size -- identical on all three pages.';
+ELSE           PRINT CONCAT (N'FAIL F3: TotalRows varied across pages (', @Totals, N' distinct values).');
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Skip = 100;
+SELECT @Rows = COUNT (*) FROM #Page;
+IF @Rows = 0 PRINT N'PASS F4: a page past the end is empty -- and TotalRows is unreadable from it, as the header warns.';
+ELSE PRINT CONCAT (N'FAIL F4: expected 0 rows past the end, got ', @Rows);
+GO
+
+-- =====================================================================================================================
+-- G. Clamping. The procedure is the boundary, so the clamp has to hold no matter what the caller sends.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- G. clamping ---';
+GO
+DECLARE @Rows INT, @Order NVARCHAR (400);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Take = 100000;
+SELECT @Rows = COUNT (*) FROM #Page;
+IF @Rows = 6 PRINT N'PASS G1: @Take = 100000 is clamped to 500 and returns the 6 rows that exist, not an error.';
+ELSE PRINT CONCAT (N'FAIL G1: got ', @Rows);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Take = 0;
+SELECT @Rows = COUNT (*) FROM #Page;
+IF @Rows = 1 PRINT N'PASS G2: @Take = 0 is floored to 1 -- a grid asking for nothing gets one row, not zero.';
+ELSE PRINT CONCAT (N'FAIL G2: expected 1 row, got ', @Rows);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Take = NULL;
+SELECT @Rows = COUNT (*) FROM #Page;
+IF @Rows = 6 PRINT N'PASS G3: @Take = NULL means the default 50, not the floor of 1.';
+ELSE PRINT CONCAT (N'FAIL G3: expected 6 rows, got ', @Rows);
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Skip = -5, @Take = 2;
+SELECT @Order = STRING_AGG (HandlerId, N',') WITHIN GROUP (ORDER BY Ordinal) FROM #Page;
+IF @Order = N'MDPROBE05031,MDPROBE05032'
+    PRINT N'PASS G4: a negative @Skip is floored to 0 rather than failing OFFSET with an error the grid cannot act on.';
+ELSE PRINT CONCAT (N'FAIL G4: ', @Order);
+
+-- The @Skip ceiling is not cosmetic: the paging predicate is `Ordinal <= @Skip + @Take`, and a @Skip near the INT
+-- maximum would overflow that sum and fail the call with an arithmetic error.
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Skip = 2147483647, @Take = 50;
+SELECT @Rows = COUNT (*) FROM #Page;
+IF @Rows = 0 PRINT N'PASS G5: @Skip at the INT maximum returns an empty page instead of overflowing @Skip + @Take.';
+ELSE PRINT CONCAT (N'FAIL G5: expected 0 rows, got ', @Rows);
+GO
+
+-- =====================================================================================================================
+-- H. The three ways dbo.vwHandlerSource excludes a row. Asserted separately, because they fail separately.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- H. what must never appear ---';
+GO
+DECLARE @Rows INT, @Total INT;
+
+DELETE FROM #Page; INSERT INTO #Page EXEC dbo.uspGetHandlerSourcePage @Take = 500;
+SELECT @Total = COALESCE (MAX (TotalRows), 0) FROM #Page;
+
+IF NOT EXISTS (SELECT 1 FROM #Page WHERE HandlerId = N'MDPROBE05037')
+    PRINT N'PASS H1: the soft-deleted row is invisible, and there is no @IncludeDeleted to make it visible.';
+ELSE PRINT N'FAIL H1: a soft-deleted row reached the grid.';
+
+IF NOT EXISTS (SELECT 1 FROM #Page WHERE HandlerId = N'MDPROBE05038')
+    PRINT N'PASS H2: a superseded version (CurrentRecord = 0) is invisible -- history is 504''s question.';
+ELSE PRINT N'FAIL H2: a non-current row reached the grid.';
+
+IF NOT EXISTS (SELECT 1 FROM #Page WHERE HandlerId = N'MDPROBE05039')
+    PRINT N'PASS H3: CurrentRecord = NULL is invisible too, because `= 1` excludes NULL. That is the reconcile-pass gap the header names.';
+ELSE PRINT N'FAIL H3: a NULL-CurrentRecord row reached the grid.';
+
+IF @Total = 6 PRINT N'PASS H4: TotalRows counts 6, not 9 -- the exclusions are applied to the COUNT as well as to the page.';
+ELSE PRINT CONCAT (N'FAIL H4: TotalRows = ', @Total, N', expected 6.');
+GO
+
+-- =====================================================================================================================
+-- I. Nothing credential-shaped in what this procedure logs.
+-- =====================================================================================================================
+PRINT N'';
+PRINT N'--- I. what got logged ---';
+GO
+DECLARE @Bad INT, @Sample NVARCHAR (MAX);
+-- The OR group is parenthesised deliberately. Without the brackets AND binds tighter, every OR branch loses the
+-- ProcedureName restriction, and the check silently becomes "does ANY procedure in logs.ExecutionLog log something
+-- credential-shaped" -- a different and much noisier question than the one this section asks.
+SELECT @Bad = COUNT (*)
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspGetHandlerSourcePage]'
+   AND (   (COALESCE (KeyParameters, N'') + COALESCE (ContextMessage, N'') + COALESCE (Comments, N''))
+               LIKE N'%[?&]%'   -- a query string would arrive carrying one of these
+        OR COALESCE (KeyParameters, N'') LIKE N'%api%'
+        OR COALESCE (KeyParameters, N'') LIKE N'%key%'
+        OR COALESCE (KeyParameters, N'') LIKE N'%token%'
+        OR COALESCE (KeyParameters, N'') LIKE N'%bearer%'
+        OR COALESCE (KeyParameters, N'') LIKE N'%password%');
+IF @Bad = 0 PRINT N'PASS I1: nothing credential-shaped or query-string-shaped in KeyParameters, ContextMessage or Comments.';
+ELSE        PRINT CONCAT (N'FAIL I1: ', @Bad, N' logged row(s) match a credential-shaped pattern.');
+
+SELECT TOP (1) @Sample = KeyParameters
+  FROM logs.ExecutionLog
+ WHERE ProcedureName = N'[dbo].[uspGetHandlerSourcePage]'
+ ORDER BY ExecutionLogId DESC;
+PRINT CONCAT (N'       sample KeyParameters: ', COALESCE (@Sample, N'(none)'));
+GO
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Cleanup. Soft delete only -- the fixture rows stay in the table and the next run retires them again.
+-- ---------------------------------------------------------------------------------------------------------------------
+UPDATE dbo.HandlerSource
+   SET IsDeleted             = 1
+     , auditDeletedBy        = ORIGINAL_LOGIN ()
+     , auditDeletedDateUtc   = SYSUTCDATETIME ()
+     , auditModifiedBy       = ORIGINAL_LOGIN ()
+     , auditModifiedDateUtc  = SYSUTCDATETIME ()
+ WHERE HandlerId LIKE N'MDPROBE0503%'
+   AND IsDeleted = 0;
+PRINT CONCAT (N'cleanup: retired ', @@ROWCOUNT, N' fixture row(s).');
+DROP TABLE #Page;
+DROP TABLE #All;
+GO
+
+PRINT N'';
+PRINT N'da4_gethandlersourcepage: done.';
+GO

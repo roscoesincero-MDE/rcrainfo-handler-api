@@ -1,0 +1,421 @@
+-- =================================================================================================
+-- 506's cost measurement. What dbo.uspSearchHandlerSource costs, and whether it needs an index of
+-- its own or can live on IX_dbo_HandlerSource_Grid (script 390).
+--
+--   sqlcmd -S localhost -E -C -I -y 0 -d RCRAInfo -i "build/tmp/measure506_search.probesql"
+--
+-- -I IS REQUIRED. sqlcmd defaults QUOTED_IDENTIFIER to OFF, and CREATE INDEX on a FILTERED index
+-- fails with error 1934 under that setting. Both filtered indexes here are filtered, so without -I
+-- the fixture builds, the measurement runs, and every case reports the no-index number while two
+-- 1934 messages scroll past above -- a green-looking run that measured the wrong thing.
+--
+-- WHY A TEMP TABLE AND NOT dbo.HandlerSource. dbo.HandlerSource holds 50 rows on the development
+-- workstation, all soft-deleted, so dbo.vwHandlerSource returns none. G22 -- the real initial-load
+-- volume -- is credential-gated and is "measured in F2". So the measurement runs against a copy
+-- built with SELECT TOP (0) * INTO, which keeps all 218 columns at their real types and widths, at
+-- the same STATED ASSUMED volume every other DA4 measurement used: 400,000 rows, one in four
+-- current. Same shape as build/tmp/io503alt2.probesql, so the numbers are comparable with 503's.
+--
+-- WHAT IS DIFFERENT FROM io503alt2. The data there is uniform -- every HandlerName is
+-- 'SYNTHETIC HANDLER <n>' and every city is Baltimore -- which is fine for a sort measurement and
+-- useless for a search one, because every term either matches everything or nothing. Here the name
+-- and the city vary, so a term can be selective, and three terms of deliberately different
+-- selectivity are measured.
+--
+-- WHAT IS BEING DECIDED:
+--   1. Does the search scan cost the 218-column clustered index, or the narrow grid index?
+--   2. Is a new index worth it -- and could any index help a leading-wildcard LIKE at all?
+--   3. Is the ID-prefix case worth splitting into a seekable query of its own (a UNION of three
+--      seeks) rather than leaving it inside one OR'd scan?
+-- =================================================================================================
+SET NOCOUNT ON;
+GO
+SELECT TOP (0) * INTO #H FROM dbo.HandlerSource;
+GO
+-- Four handler-name stems and eight cities, so a term can match a known fraction of the set rather
+-- than all of it or none. HandlerId stays MD + 10 digits, four sequences per handler with the
+-- fourth current, exactly as io503alt2 builds it.
+INSERT INTO #H (HandlerId, ActivityLocation, SourceType, Sequence, CurrentRecord, IsDeleted
+              , SourceTypeDescription, SourceTypeSortOrder, HandlerName, ReceivedDate, SrcUpdatedDate
+              , SiteLocationCity, WasteFederalGeneratorCategoryCode
+              , SiteLocationAddress1, SiteLocationStateCode, SiteLocationStateDescription, SiteLocationZip
+              , SiteLocationCountyDescription, SiteMailingAddressAddress1, NaicsPrimaryDescription
+              , ContactFirstName, ContactLastName, ContactTitle, ContactEmail, ContactAddressAddress1
+              , WasteFederalGeneratorCategoryDescription
+              , auditDeletedBy, auditDeletedDateUtc, auditCreatedBy, auditCreatedDateUtc
+              , auditModifiedBy, auditModifiedDateUtc)
+SELECT N'MD' + RIGHT (N'0000000000' + CAST ((g.value - 1) / 4 + 1 AS NVARCHAR (10)), 10), N'MD', N'H'
+     , (g.value - 1) % 4 + 1, CASE WHEN (g.value - 1) % 4 = 3 THEN 1 ELSE 0 END, 0
+     , N'Handler notification', 1
+     -- (g.value - 1) / 4 is the HANDLER number, so the stem and the city are properties of the
+     -- handler and constant across its four versions. Keying them off (g.value - 1) % 4 instead --
+     -- the SEQUENCE -- made the stem a function of the version, so every current row shared one stem
+     -- and every term but a one-character one matched nothing at all.
+     , CHOOSE (((g.value - 1) / 4) % 4 + 1, N'ACME PLATING COMPANY ', N'CHESAPEAKE SOLVENTS INC '
+                                          , N'TIDEWATER METAL FINISHING ', N'PATAPSCO CHEMICAL WORKS ')
+       + CAST ((g.value - 1) / 4 + 1 AS NVARCHAR (11))
+     , CAST ('2026-01-01' AS DATE), CAST ('2026-01-01' AS DATE)
+     , CHOOSE (((g.value - 1) / 4) % 8 + 1, N'Baltimore', N'Frederick', N'Rockville', N'Annapolis'
+                                          , N'Hagerstown', N'Salisbury', N'Cumberland', N'Elkton')
+     , N'1'
+     , REPLICATE (N'x', 40), N'MD', N'Maryland', N'21201-1234', N'Baltimore City', REPLICATE (N'x', 40)
+     , REPLICATE (N'x', 40), N'Synthetic', N'Contact', N'Environmental Manager'
+     , N'synthetic.contact@example.invalid', REPLICATE (N'x', 40), N'Large Quantity Generator'
+     , ORIGINAL_LOGIN (), SYSUTCDATETIME (), ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+     , ORIGINAL_LOGIN (), SYSUTCDATETIME ()
+  FROM GENERATE_SERIES (1, 400000) AS g;
+ALTER TABLE #H ADD CONSTRAINT PK_H PRIMARY KEY CLUSTERED (HandlerSourceId);
+CREATE UNIQUE NONCLUSTERED INDEX UX_H_Natural ON #H (HandlerId, SourceType, Sequence) WHERE IsDeleted = 0;
+GO
+PRINT N'--- fixture ---';
+SELECT COUNT (*) AS Rows_All, SUM (CAST (CurrentRecord AS INT)) AS Rows_Current FROM #H;
+GO
+
+-- =================================================================================================
+-- CASE 1: no covering index. Only the clustered PK and the natural unique index exist, which is a
+-- database where script 390 has not been applied.
+-- =================================================================================================
+DECLARE @Term NVARCHAR (200) = N'ACME'
+      , @Skip INT = 0, @Take INT = 25, @TotalRows INT = 0;
+DECLARE @Exact NVARCHAR (200) = @Term
+      , @Prefix NVARCHAR (402) = @Term + N'%'
+      , @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+DECLARE @Hits TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, MatchRank TINYINT NOT NULL);
+PRINT N'--- CASE 1a: no index, term ACME (name prefix, 1 in 4 of current) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')
+OPTION (RECOMPILE);
+INSERT INTO @Hits (Ordinal, HandlerSourceId, MatchRank)
+SELECT p.Ordinal, p.HandlerSourceId, p.MatchRank
+  FROM (SELECT ROW_NUMBER () OVER (ORDER BY m.MatchRank ASC, m.HandlerName ASC, m.HandlerSourceId ASC) AS Ordinal
+             , m.HandlerSourceId, m.MatchRank
+          FROM (SELECT v.HandlerSourceId, v.HandlerName
+                     , CASE WHEN v.HandlerId        =    @Exact                     THEN CAST (1 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Prefix   ESCAPE N'\'      THEN CAST (2 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Contains ESCAPE N'\'      THEN CAST (3 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Prefix   ESCAPE N'\'      THEN CAST (4 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Contains ESCAPE N'\'      THEN CAST (5 AS TINYINT)
+                            WHEN v.SiteLocationCity LIKE @Prefix   ESCAPE N'\'      THEN CAST (6 AS TINYINT)
+                            ELSE CAST (7 AS TINYINT) END AS MatchRank
+                  FROM #H AS v
+                 WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+                   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')) AS m) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + @Take
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+-- Hoisted: PRINT rejects a subquery (error 1046) and that is a COMPILE error, which discards the
+-- WHOLE batch -- including the measurement above it.
+DECLARE @RowsOnPage INT = (SELECT COUNT (*) FROM @Hits);
+PRINT CONCAT (N'    TotalRows=', @TotalRows, N'  RowsOnPage=', @RowsOnPage);
+GO
+DECLARE @Term NVARCHAR (200) = N'MD00000123'
+      , @Skip INT = 0, @Take INT = 25, @TotalRows INT = 0;
+DECLARE @Exact NVARCHAR (200) = @Term
+      , @Prefix NVARCHAR (402) = @Term + N'%'
+      , @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+DECLARE @Hits TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, MatchRank TINYINT NOT NULL);
+PRINT N'--- CASE 1b: no index, term MD00000123 (ID prefix, 100 of 100,000 current) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')
+OPTION (RECOMPILE);
+INSERT INTO @Hits (Ordinal, HandlerSourceId, MatchRank)
+SELECT p.Ordinal, p.HandlerSourceId, p.MatchRank
+  FROM (SELECT ROW_NUMBER () OVER (ORDER BY m.MatchRank ASC, m.HandlerName ASC, m.HandlerSourceId ASC) AS Ordinal
+             , m.HandlerSourceId, m.MatchRank
+          FROM (SELECT v.HandlerSourceId, v.HandlerName
+                     , CASE WHEN v.HandlerId        =    @Exact                THEN CAST (1 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Prefix   ESCAPE N'\' THEN CAST (2 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Contains ESCAPE N'\' THEN CAST (3 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Prefix   ESCAPE N'\' THEN CAST (4 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Contains ESCAPE N'\' THEN CAST (5 AS TINYINT)
+                            WHEN v.SiteLocationCity LIKE @Prefix   ESCAPE N'\' THEN CAST (6 AS TINYINT)
+                            ELSE CAST (7 AS TINYINT) END AS MatchRank
+                  FROM #H AS v
+                 WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+                   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')) AS m) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + @Take
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+-- Hoisted: PRINT rejects a subquery (error 1046) and that is a COMPILE error, which discards the
+-- WHOLE batch -- including the measurement above it.
+DECLARE @RowsOnPage INT = (SELECT COUNT (*) FROM @Hits);
+PRINT CONCAT (N'    TotalRows=', @TotalRows, N'  RowsOnPage=', @RowsOnPage);
+GO
+
+-- =================================================================================================
+-- CASE 2: with the real grid index's shape, plus the two columns 506 searches that 390 does not
+-- already carry. 390 INCLUDEs HandlerName and SiteLocationCity already, so this IS 390's shape.
+-- =================================================================================================
+CREATE NONCLUSTERED INDEX IX_H_Grid ON #H (HandlerId)
+    INCLUDE (ActivityLocation, SourceType, SourceTypeSortOrder, HandlerName, ReceivedDate
+           , SrcUpdatedDate, SiteLocationCity, WasteFederalGeneratorCategoryCode)
+    WHERE IsDeleted = 0 AND CurrentRecord = 1;
+GO
+DECLARE @Term NVARCHAR (200) = N'ACME'
+      , @Skip INT = 0, @Take INT = 25, @TotalRows INT = 0;
+DECLARE @Exact NVARCHAR (200) = @Term
+      , @Prefix NVARCHAR (402) = @Term + N'%'
+      , @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+DECLARE @Hits TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, MatchRank TINYINT NOT NULL);
+PRINT N'--- CASE 2a: IX_H_Grid, term ACME (name prefix, 1 in 4 of current) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')
+OPTION (RECOMPILE);
+INSERT INTO @Hits (Ordinal, HandlerSourceId, MatchRank)
+SELECT p.Ordinal, p.HandlerSourceId, p.MatchRank
+  FROM (SELECT ROW_NUMBER () OVER (ORDER BY m.MatchRank ASC, m.HandlerName ASC, m.HandlerSourceId ASC) AS Ordinal
+             , m.HandlerSourceId, m.MatchRank
+          FROM (SELECT v.HandlerSourceId, v.HandlerName
+                     , CASE WHEN v.HandlerId        =    @Exact                THEN CAST (1 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Prefix   ESCAPE N'\' THEN CAST (2 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Contains ESCAPE N'\' THEN CAST (3 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Prefix   ESCAPE N'\' THEN CAST (4 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Contains ESCAPE N'\' THEN CAST (5 AS TINYINT)
+                            WHEN v.SiteLocationCity LIKE @Prefix   ESCAPE N'\' THEN CAST (6 AS TINYINT)
+                            ELSE CAST (7 AS TINYINT) END AS MatchRank
+                  FROM #H AS v
+                 WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+                   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')) AS m) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + @Take
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+-- Hoisted: PRINT rejects a subquery (error 1046) and that is a COMPILE error, which discards the
+-- WHOLE batch -- including the measurement above it.
+DECLARE @RowsOnPage INT = (SELECT COUNT (*) FROM @Hits);
+PRINT CONCAT (N'    TotalRows=', @TotalRows, N'  RowsOnPage=', @RowsOnPage);
+GO
+DECLARE @Term NVARCHAR (200) = N'MD00000123'
+      , @Skip INT = 0, @Take INT = 25, @TotalRows INT = 0;
+DECLARE @Exact NVARCHAR (200) = @Term
+      , @Prefix NVARCHAR (402) = @Term + N'%'
+      , @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+DECLARE @Hits TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, MatchRank TINYINT NOT NULL);
+PRINT N'--- CASE 2b: IX_H_Grid, term MD00000123 (ID prefix, 100 of 100,000 current) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')
+OPTION (RECOMPILE);
+INSERT INTO @Hits (Ordinal, HandlerSourceId, MatchRank)
+SELECT p.Ordinal, p.HandlerSourceId, p.MatchRank
+  FROM (SELECT ROW_NUMBER () OVER (ORDER BY m.MatchRank ASC, m.HandlerName ASC, m.HandlerSourceId ASC) AS Ordinal
+             , m.HandlerSourceId, m.MatchRank
+          FROM (SELECT v.HandlerSourceId, v.HandlerName
+                     , CASE WHEN v.HandlerId        =    @Exact                THEN CAST (1 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Prefix   ESCAPE N'\' THEN CAST (2 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Contains ESCAPE N'\' THEN CAST (3 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Prefix   ESCAPE N'\' THEN CAST (4 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Contains ESCAPE N'\' THEN CAST (5 AS TINYINT)
+                            WHEN v.SiteLocationCity LIKE @Prefix   ESCAPE N'\' THEN CAST (6 AS TINYINT)
+                            ELSE CAST (7 AS TINYINT) END AS MatchRank
+                  FROM #H AS v
+                 WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+                   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')) AS m) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + @Take
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+-- Hoisted: PRINT rejects a subquery (error 1046) and that is a COMPILE error, which discards the
+-- WHOLE batch -- including the measurement above it.
+DECLARE @RowsOnPage INT = (SELECT COUNT (*) FROM @Hits);
+PRINT CONCAT (N'    TotalRows=', @TotalRows, N'  RowsOnPage=', @RowsOnPage);
+GO
+DECLARE @Term NVARCHAR (200) = N'BALTIMORE'
+      , @Skip INT = 0, @Take INT = 25, @TotalRows INT = 0;
+DECLARE @Exact NVARCHAR (200) = @Term
+      , @Prefix NVARCHAR (402) = @Term + N'%'
+      , @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+DECLARE @Hits TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, MatchRank TINYINT NOT NULL);
+PRINT N'--- CASE 2c: IX_H_Grid, term BALTIMORE (city, 1 in 8 of current) ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')
+OPTION (RECOMPILE);
+INSERT INTO @Hits (Ordinal, HandlerSourceId, MatchRank)
+SELECT p.Ordinal, p.HandlerSourceId, p.MatchRank
+  FROM (SELECT ROW_NUMBER () OVER (ORDER BY m.MatchRank ASC, m.HandlerName ASC, m.HandlerSourceId ASC) AS Ordinal
+             , m.HandlerSourceId, m.MatchRank
+          FROM (SELECT v.HandlerSourceId, v.HandlerName
+                     , CASE WHEN v.HandlerId        =    @Exact                THEN CAST (1 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Prefix   ESCAPE N'\' THEN CAST (2 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Contains ESCAPE N'\' THEN CAST (3 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Prefix   ESCAPE N'\' THEN CAST (4 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Contains ESCAPE N'\' THEN CAST (5 AS TINYINT)
+                            WHEN v.SiteLocationCity LIKE @Prefix   ESCAPE N'\' THEN CAST (6 AS TINYINT)
+                            ELSE CAST (7 AS TINYINT) END AS MatchRank
+                  FROM #H AS v
+                 WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+                   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')) AS m) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + @Take
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+-- Hoisted: PRINT rejects a subquery (error 1046) and that is a COMPILE error, which discards the
+-- WHOLE batch -- including the measurement above it.
+DECLARE @RowsOnPage INT = (SELECT COUNT (*) FROM @Hits);
+PRINT CONCAT (N'    TotalRows=', @TotalRows, N'  RowsOnPage=', @RowsOnPage);
+GO
+
+-- =================================================================================================
+-- CASE 3: the alternative that was considered and is expected to lose. Split the ID-prefix case out
+-- into its own seekable query. If the seek is dramatically cheaper than CASE 2b, the extra 60 lines
+-- of duplicated predicate might be worth it; if it is not, one OR'd scan is the answer.
+-- =================================================================================================
+DECLARE @Term NVARCHAR (200) = N'MD00000123';
+DECLARE @Prefix NVARCHAR (402) = @Term + N'%';
+PRINT N'--- CASE 3: IX_H_Grid, ID-prefix ONLY, seekable (no OR) ---';
+SET STATISTICS IO ON;
+SELECT COUNT (*) AS SeekableIdPrefixRows
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND v.HandlerId LIKE @Prefix ESCAPE N'\'
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO
+-- =================================================================================================
+-- CASE 4: what a one-character term would have cost, which is why 506 refuses one. Not an
+-- optimisation question -- the cost is the same scan -- but the RESULT is 100,000 rows ranked by a
+-- CASE that cannot separate them, of which the caller sees an arbitrary 25.
+-- =================================================================================================
+DECLARE @Term NVARCHAR (200) = N'A';
+DECLARE @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+PRINT N'--- CASE 4: IX_H_Grid, one-character term (REFUSED by 506; measured to justify the refusal) ---';
+SET STATISTICS IO ON;
+SELECT COUNT (*) AS OneCharacterTermRows
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND (v.HandlerId LIKE @Contains ESCAPE N'\' OR v.HandlerName LIKE @Contains ESCAPE N'\'
+     OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+GO
+-- =================================================================================================
+-- CASE 5: THE AS-BUILT PREDICATE. CASE 3 showed an ID-prefix SEEK costs 6 logical reads against the
+-- 1,826 of CASE 2b's OR'd scan -- 300 times less for the search a monitoring user does most, which is
+-- to paste a handler ID. The question CASE 5 answers is whether both can live in ONE query.
+--
+-- @IdShaped is a BIT decided in T-SQL before the query runs. Under OPTION (RECOMPILE) it is embedded
+-- as a constant at compile time, so one of the two OR groups below is constant-false and eliminated:
+-- either the predicate that reaches the optimizer is a bare seekable prefix, or it is a bare
+-- contains-scan. Same mechanism 503 measured on its CASE-based ORDER BY. If it works, 506 keeps one
+-- WHERE clause instead of two code paths.
+-- =================================================================================================
+DECLARE @Term NVARCHAR (200) = N'MD00000123', @IdShaped BIT = 1
+      , @Skip INT = 0, @Take INT = 25, @TotalRows INT = 0;
+DECLARE @Exact NVARCHAR (200) = @Term
+      , @Prefix NVARCHAR (402) = @Term + N'%'
+      , @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+DECLARE @Hits TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, MatchRank TINYINT NOT NULL);
+PRINT N'--- CASE 5a: as-built, @IdShaped = 1, term MD00000123 ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND ((@IdShaped = 1 AND v.HandlerId LIKE @Prefix ESCAPE N'\')
+     OR (@IdShaped = 0 AND (v.HandlerId LIKE @Contains ESCAPE N'\'
+                         OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                         OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')))
+OPTION (RECOMPILE);
+INSERT INTO @Hits (Ordinal, HandlerSourceId, MatchRank)
+SELECT p.Ordinal, p.HandlerSourceId, p.MatchRank
+  FROM (SELECT ROW_NUMBER () OVER (ORDER BY m.MatchRank ASC, m.HandlerName ASC, m.HandlerSourceId ASC) AS Ordinal
+             , m.HandlerSourceId, m.MatchRank
+          FROM (SELECT v.HandlerSourceId, v.HandlerName
+                     , CASE WHEN v.HandlerId        =    @Exact                THEN CAST (1 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Prefix   ESCAPE N'\' THEN CAST (2 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Contains ESCAPE N'\' THEN CAST (3 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Prefix   ESCAPE N'\' THEN CAST (4 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Contains ESCAPE N'\' THEN CAST (5 AS TINYINT)
+                            WHEN v.SiteLocationCity LIKE @Prefix   ESCAPE N'\' THEN CAST (6 AS TINYINT)
+                            ELSE CAST (7 AS TINYINT) END AS MatchRank
+                  FROM #H AS v
+                 WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+                   AND ((@IdShaped = 1 AND v.HandlerId LIKE @Prefix ESCAPE N'\')
+                     OR (@IdShaped = 0 AND (v.HandlerId LIKE @Contains ESCAPE N'\'
+                                         OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                                         OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')))) AS m) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + @Take
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+DECLARE @RowsOnPage INT = (SELECT COUNT (*) FROM @Hits);
+PRINT CONCAT (N'    TotalRows=', @TotalRows, N'  RowsOnPage=', @RowsOnPage);
+GO
+DECLARE @Term NVARCHAR (200) = N'ACME', @IdShaped BIT = 0
+      , @Skip INT = 0, @Take INT = 25, @TotalRows INT = 0;
+DECLARE @Exact NVARCHAR (200) = @Term
+      , @Prefix NVARCHAR (402) = @Term + N'%'
+      , @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+DECLARE @Hits TABLE (Ordinal INT NOT NULL PRIMARY KEY, HandlerSourceId INT NOT NULL, MatchRank TINYINT NOT NULL);
+PRINT N'--- CASE 5b: as-built, @IdShaped = 0, term ACME ---';
+SET STATISTICS IO ON;
+SELECT @TotalRows = COUNT (*)
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND ((@IdShaped = 1 AND v.HandlerId LIKE @Prefix ESCAPE N'\')
+     OR (@IdShaped = 0 AND (v.HandlerId LIKE @Contains ESCAPE N'\'
+                         OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                         OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')))
+OPTION (RECOMPILE);
+INSERT INTO @Hits (Ordinal, HandlerSourceId, MatchRank)
+SELECT p.Ordinal, p.HandlerSourceId, p.MatchRank
+  FROM (SELECT ROW_NUMBER () OVER (ORDER BY m.MatchRank ASC, m.HandlerName ASC, m.HandlerSourceId ASC) AS Ordinal
+             , m.HandlerSourceId, m.MatchRank
+          FROM (SELECT v.HandlerSourceId, v.HandlerName
+                     , CASE WHEN v.HandlerId        =    @Exact                THEN CAST (1 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Prefix   ESCAPE N'\' THEN CAST (2 AS TINYINT)
+                            WHEN v.HandlerId        LIKE @Contains ESCAPE N'\' THEN CAST (3 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Prefix   ESCAPE N'\' THEN CAST (4 AS TINYINT)
+                            WHEN v.HandlerName      LIKE @Contains ESCAPE N'\' THEN CAST (5 AS TINYINT)
+                            WHEN v.SiteLocationCity LIKE @Prefix   ESCAPE N'\' THEN CAST (6 AS TINYINT)
+                            ELSE CAST (7 AS TINYINT) END AS MatchRank
+                  FROM #H AS v
+                 WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+                   AND ((@IdShaped = 1 AND v.HandlerId LIKE @Prefix ESCAPE N'\')
+                     OR (@IdShaped = 0 AND (v.HandlerId LIKE @Contains ESCAPE N'\'
+                                         OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                                         OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')))) AS m) AS p
+ WHERE p.Ordinal > @Skip AND p.Ordinal <= @Skip + @Take
+OPTION (RECOMPILE);
+SET STATISTICS IO OFF;
+DECLARE @RowsOnPage INT = (SELECT COUNT (*) FROM @Hits);
+PRINT CONCAT (N'    TotalRows=', @TotalRows, N'  RowsOnPage=', @RowsOnPage);
+GO
+-- CASE 6: the same as-built predicate WITHOUT the recompile, to show what the fold is worth. If the
+-- constant cannot be embedded, neither OR group can be eliminated and the seek is unreachable.
+DECLARE @Term NVARCHAR (200) = N'MD00000123', @IdShaped BIT = 1;
+DECLARE @Prefix NVARCHAR (402) = @Term + N'%', @Contains NVARCHAR (402) = N'%' + @Term + N'%';
+PRINT N'--- CASE 6: as-built predicate, @IdShaped = 1, NO OPTION (RECOMPILE) ---';
+SET STATISTICS IO ON;
+SELECT COUNT (*) AS NoRecompileRows
+  FROM #H AS v
+ WHERE v.IsDeleted = 0 AND v.CurrentRecord = 1
+   AND ((@IdShaped = 1 AND v.HandlerId LIKE @Prefix ESCAPE N'\')
+     OR (@IdShaped = 0 AND (v.HandlerId LIKE @Contains ESCAPE N'\'
+                         OR v.HandlerName LIKE @Contains ESCAPE N'\'
+                         OR v.SiteLocationCity LIKE @Contains ESCAPE N'\')));
+SET STATISTICS IO OFF;
+GO
+DROP TABLE IF EXISTS #H;
+GO
+PRINT N'measure506_search: done.';
+GO

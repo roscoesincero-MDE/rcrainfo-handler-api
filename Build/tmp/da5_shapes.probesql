@@ -1,0 +1,32 @@
+SET NOCOUNT ON;
+DECLARE @Procs TABLE (Ordinal INT IDENTITY (1, 1), Name NVARCHAR (200));
+INSERT INTO @Procs (Name) VALUES
+  (N'dbo.uspGetHandlerSourcePage'), (N'dbo.uspGetHandlerSourceHistoryPage'),
+  (N'dbo.uspGetHandlerSourceDetail'), (N'dbo.uspSearchHandlerSource'),
+  (N'logs.uspGetLoadRunPage'), (N'logs.uspGetHandlerLoadStatusPage'),
+  (N'logs.uspGetLoadRunSummary'), (N'config.uspGetLoadWatermark'),
+  (N'dbo.uspMergeHandlerSourceBatch'), (N'logs.uspUpsertHandlerLoadStatusSet');
+
+DECLARE @i INT = 1, @n INT = (SELECT MAX (Ordinal) FROM @Procs), @Name NVARCHAR (200), @Sql NVARCHAR (MAX);
+
+WHILE @i <= @n
+BEGIN
+    SELECT @Name = Name FROM @Procs WHERE Ordinal = @i;
+    PRINT CONCAT (N'### ', @Name);
+    BEGIN TRY
+        SELECT @Sql = CONCAT (N'EXEC ', @Name, N' ',
+            ISNULL (STUFF ((SELECT CONCAT (N', ', pa.name, N' = NULL')
+                            FROM sys.parameters AS pa
+                            WHERE pa.object_id = OBJECT_ID (@Name) AND pa.is_output = 0
+                            ORDER BY pa.parameter_id
+                            FOR XML PATH (N''), TYPE).value (N'.', N'NVARCHAR(MAX)'), 1, 2, N''), N''));
+        SELECT CONCAT (column_ordinal, N'|', name, N'|', system_type_name, N'|',
+                       CASE WHEN is_nullable = 1 THEN N'null' ELSE N'notnull' END) AS Col
+        FROM sys.dm_exec_describe_first_result_set (@Sql, NULL, 0)
+        ORDER BY column_ordinal;
+    END TRY
+    BEGIN CATCH
+        PRINT CONCAT (N'  !! ', ERROR_MESSAGE ());
+    END CATCH;
+    SET @i += 1;
+END;
