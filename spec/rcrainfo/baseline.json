@@ -1,0 +1,21 @@
+{
+  "specSha256": "cd8fffdcc29963e2813953bc8560d81b8ec2e4d63c03d853549535e585938aba",
+  "specVersion": "1.0 (built on 09/01/2026 06:43:56 PM)",
+  "paths": 91,
+  "definitions": 142,
+  "topLevelProperties": 38,
+  "topLevelScalars": 19,
+  "leafFields": 444,
+  "describedLeafFields": 187,
+  "describedPercent": 42,
+  "leafFieldsInScope": 377,
+  "describedLeafFieldsInScope": 187,
+  "describedPercentInScope": 50,
+  "collections": 24,
+  "collectionsInScope": 18,
+  "nestedObjects": 85,
+  "nestedObjectsInScope": 74,
+  "lookupEndpoints": 24,
+  "lookupDefinitions": 23,
+  "unboundedStrings": 73
+}

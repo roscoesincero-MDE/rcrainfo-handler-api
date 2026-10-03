@@ -1,0 +1,179 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Triaging what a load run noticed",
+    "output": "docs/data-quality/diagrams/03-triage.html",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "hidden"
+    }
+  },
+  "lanes": [
+    {
+      "id": "read",
+      "label": "Reading the run"
+    },
+    {
+      "id": "judge",
+      "label": "Judging what it noticed"
+    },
+    {
+      "id": "act",
+      "label": "When it needs a person",
+      "variant": "exception"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "open",
+      "lane": "read",
+      "col": 0,
+      "type": "external",
+      "label": "Open The Run",
+      "sublabel": "one row per load run",
+      "width": 132
+    },
+    {
+      "id": "counts",
+      "lane": "read",
+      "col": 1,
+      "type": "frontend",
+      "label": "Read Three Counts",
+      "sublabel": "Error, Warning, Info",
+      "width": 132
+    },
+    {
+      "id": "errors",
+      "lane": "judge",
+      "col": 2,
+      "type": "security",
+      "label": "Errors First",
+      "sublabel": "the data contradicts itself",
+      "tag": "Error",
+      "width": 132
+    },
+    {
+      "id": "warnings",
+      "lane": "judge",
+      "col": 3,
+      "type": "backend",
+      "label": "Then Warnings",
+      "sublabel": "expected, worth reading",
+      "tag": "Warning",
+      "width": 132
+    },
+    {
+      "id": "infos",
+      "lane": "judge",
+      "col": 4,
+      "type": "backend",
+      "label": "Info Last",
+      "sublabel": "a record, not a task",
+      "tag": "Info",
+      "width": 132
+    },
+    {
+      "id": "clear",
+      "lane": "judge",
+      "col": 5,
+      "type": "database",
+      "label": "Run Accepted",
+      "sublabel": "nothing outstanding",
+      "width": 132
+    },
+    {
+      "id": "kinds",
+      "lane": "act",
+      "col": 3,
+      "type": "messagebus",
+      "label": "How Many Kinds?",
+      "sublabel": "one cause, or many",
+      "tag": "ObservationTypeCount",
+      "width": 132
+    },
+    {
+      "id": "refetch",
+      "lane": "act",
+      "col": 4,
+      "type": "security",
+      "label": "Reconcile It",
+      "sublabel": "against a fresh EPA list",
+      "tag": "the usual fix",
+      "width": 132
+    },
+    {
+      "id": "raise",
+      "lane": "act",
+      "col": 5,
+      "type": "security",
+      "label": "Raise It",
+      "sublabel": "developer, or EPA",
+      "width": 132
+    }
+  ],
+  "mainPath": [
+    "open",
+    "counts",
+    "errors",
+    "warnings",
+    "infos",
+    "clear"
+  ],
+  "edges": [
+    {
+      "id": "e-open",
+      "from": "open",
+      "to": "counts",
+      "variant": "default"
+    },
+    {
+      "id": "e-counts",
+      "from": "counts",
+      "to": "errors",
+      "label": "worst first",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-errors",
+      "from": "errors",
+      "to": "warnings",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-warnings",
+      "from": "warnings",
+      "to": "infos",
+      "variant": "default"
+    },
+    {
+      "id": "e-infos",
+      "from": "infos",
+      "to": "clear",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-many",
+      "from": "errors",
+      "to": "kinds",
+      "label": "more than a handful?",
+      "variant": "security"
+    },
+    {
+      "id": "e-fix",
+      "from": "kinds",
+      "to": "refetch",
+      "label": "treat the cause",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "e-stuck",
+      "from": "refetch",
+      "to": "raise",
+      "label": "survives a reconcile",
+      "variant": "security",
+      "role": "error"
+    }
+  ]
+}
