@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The console application (AR1). Run unattended by Windows Task Scheduler: initial load fetches
+    everything, subsequent runs fetch updates only.
+
+    Http.Resilience supplies the retry/timeout pipeline for the RCRAInfo REST calls. An overnight
+    load that dies on one transient 503 is a load that did not happen, and nobody is watching at 2am.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RCRAInfo.Loader</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Deployed beside the executable because every "not seeded" message this application can produce
+      tells the operator to copy this file to secrets.json. An instruction naming a file that is not on
+      the machine is worse than no instruction. The template holds the shape and no values; secrets.json
+      itself is gitignored by name and never deployed.
+    -->
+    <Content Include="secrets.Template.json" CopyToOutputDirectory="PreserveNewest" />
+
+    <!--
+      The non-secret settings, deployed for the same reason: RCRAInfoApi:BaseAddress has no default, so
+      the message an unconfigured run produces tells the operator to copy this file and fill it in. It is
+      exempt from .gitignore's appsettings.*.json rule by name, and holds no value that could be a secret:
+      the password and the API pair are in secrets.json.
+    -->
+    <Content Include="appsettings.Template.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" />
+    <!-- OptionsBuilder.Bind and IConfiguration.Get<T>, for the RCRAInfoApi section. -->
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RCRAInfo.Core\RCRAInfo.Core.csproj" />
+    <ProjectReference Include="..\RCRAInfo.Data\RCRAInfo.Data.csproj" />
+  </ItemGroup>
+
+  <!--
+    Two internals are reachable from the unit tests, for two unrelated reasons.
+
+    LoaderArguments is internal because it is this executable's own command line and nothing outside it has
+    any business parsing one. It has to be testable anyway: every switch it understands asks for something
+    NARROWER than the default, so an unrecognised argument that were merely ignored would start the full
+    scheduled load (the initial load, on a fresh database) on behalf of an operator who mistyped the
+    handler-id switch. The refusal is the feature, and a refusal is only assertable by calling Parse.
+
+    RequestPacer.Reserve is the whole rate limiter — it takes an instant, returns the wait, and moves the next permitted send time. Asserting the
+    configured rate through AcquireAsync instead would mean measuring a real timer, because this suite's
+    TestClock overrides GetUtcNow only and Microsoft.Extensions.TimeProvider.Testing is deliberately not
+    referenced (a package added for two members is a package to keep up to date forever). So the choice is
+    between a test that proves "two per second" exactly in microseconds and one that waits half a second to
+    prove less.
+
+    Deliberately InternalsVisibleTo and not public: reserving a slot without then waiting for it is the one
+    way to misuse this class, and AcquireAsync is the entry point that cannot be misused that way.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="RCRAInfo.Loader.Tests" />
+  </ItemGroup>
+
+</Project>
